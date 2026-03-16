@@ -9,12 +9,15 @@ datasource db {
   directUrl = env("DIRECT_URL")
 }
 
+// One row per device/browser. Created automatically on first API call.
 model User {
-  id        String   @id
-  createdAt DateTime @default(now())
-  habits    Habit[]
+  id          String       @id
+  createdAt   DateTime     @default(now())
+  habits      Habit[]
+  completions Completion[]
 }
 
+// Each user gets their own copy of the 4 default habits.
 model Habit {
   id          Int          @id @default(autoincrement())
   userId      String
@@ -26,14 +29,18 @@ model Habit {
   @@index([userId])
 }
 
+// userId is denormalised here so every query can filter by userId
+// directly without a JOIN through Habit — enables the fast index below.
 model Completion {
   id        Int      @id @default(autoincrement())
   habitId   Int
+  userId    String
   habit     Habit    @relation(fields: [habitId], references: [id], onDelete: Cascade)
-  date      String
-  createdAt DateTime @default(now())
+  user      User     @relation(fields: [userId], references: [id], onDelete: Cascade)
+  date      String   // YYYY-MM-DD
 
-  @@unique([habitId, date])
-  @@index([habitId, date])
-  @@index([date])
+  @@unique([habitId, date])          // prevents duplicate completions
+  @@index([userId, date])            // primary read path: user's completions on a date
+  @@index([habitId])                 // cascade deletes
+  @@index([date])                    // calendar range scans
 }

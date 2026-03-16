@@ -1,50 +1,45 @@
 import { NextResponse } from 'next/server';
 import { prisma } from '../../../lib/prisma';
-import { extractUserId, getOrCreateUser, computeStreak, renameHabit } from '../../../lib/users';
+import { extractUserId, getOrCreateUser } from '../../../lib/users';
+import { computeAllStats } from '../../../lib/stats';
+
+/**
+ * GET /api/stats
+ *
+ * Returns { streak, highest, rate, progress } for the requesting user.
+ * A single groupBy covers all four stats — computed in memory by lib/stats.js.
+ *
+ * NOTE: /api/dashboard returns these same stats in the initial page load.
+ *       This endpoint exists for isolated stat refreshes if needed.
+ */
+
+const LOOKBACK_DAYS = 366;
 
 export async function GET(request) {
   const userId = extractUserId(request);
   if (!userId) return NextResponse.json({ error: 'Missing X-User-Id header' }, { status: 400 });
+
   try {
     const user = await getOrCreateUser(userId);
-    const habits = user.habits;
-    const habitIds = habits.map((h) => h.id);
-    const habitCount = habits.length;
+    const habitCount = user.habits.length;
 
     if (habitCount === 0) {
-      return NextResponse.json({ highest: 0, overallRate: 0, totalTrackedDays: 0, perHabit: [] });
+      return NextResponse.json({ streak: 0, highest: 0, rate: 0, progress: 0 });
     }
 
-    const [byDateGroups, byHabitGroups] = await Promise.all([
-      prisma.completion.groupBy({
-        by: ['date'],
-        where: { habitId: { in: habitIds } },
-        _count: { date: true },
-      }),
-      prisma.completion.groupBy({
-        by: ['habitId'],
-        where: { habitId: { in: habitIds } },
-        _count: { habitId: true },
-      }),
-    ]);
+    const lookbackStr = new Date(Date.now() - LOOKBACK_DAYS * 86_400_000)
+      .toISOString().slice(0, 10);
 
-    const totalTrackedDays = byDateGroups.length;
-    const completedDays = byDateGroups.filter((g) => g._count.date === habitCount).length;
-    const overallRate = totalTrackedDays > 0 ? Math.round((completedDays / totalTrackedDays) * 100) : 0;
-    const { highest } = computeStreak(byDateGroups, habitCount);
+    const groups = await prisma.completion.groupBy({
+      by:      ['date'],
+      where:   { userId, date: { gte: lookbackStr } },
+      _count:  { date: true },
+      orderBy: { date: 'asc' },
+    });
 
-    const byHabitMap = {};
-    for (const g of byHabitGroups) byHabitMap[g.habitId] = g._count.habitId;
-
-    const perHabit = habits.map((h) => ({
-      id: h.id,
-      name: renameHabit(h).name,
-      rate: totalTrackedDays > 0 ? Math.round(((byHabitMap[h.id] || 0) / totalTrackedDays) * 100) : 0,
-    }));
-
-    return NextResponse.json({ highest, overallRate, totalTrackedDays, perHabit });
+    return NextResponse.json(computeAllStats(groups, habitCount));
   } catch (e) {
-    console.error(e);
+    console.error('[stats]', e);
     return NextResponse.json({ error: 'Failed to compute stats' }, { status: 500 });
   }
 }
