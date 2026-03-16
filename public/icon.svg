@@ -1,0 +1,7 @@
+<svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 100 100">
+  <rect width="100" height="100" rx="22" fill="#0f172a"/>
+  <!-- Outer flame -->
+  <path d="M50 14 C43 24 27 38 30 56 C32 68 40 74 46 70 C44 77 47 83 50 86 C53 83 56 77 54 70 C60 74 68 68 70 56 C73 38 57 24 50 14Z" fill="#22c55e"/>
+  <!-- Inner core highlight -->
+  <path d="M50 36 C46 44 41 53 45 60 C47 64 50 64 50 62 C50 64 53 64 55 60 C59 53 54 44 50 36Z" fill="#0f172a" opacity="0.3"/>
+</svg>

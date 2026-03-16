@@ -1,0 +1,19 @@
+# Dependencies
+node_modules
+.pnp
+.pnp.js
+
+# Next.js
+.next
+out
+
+# Env and DB
+.env
+.env*.local
+*.db
+prisma/dev.db
+
+# Misc
+.DS_Store
+*.pem
+.vercel
