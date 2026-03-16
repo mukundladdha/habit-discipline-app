@@ -4,7 +4,8 @@
       "Bash(npm install:*)",
       "Bash(node -e \"require\\(''framer-motion''\\); console.log\\(''ok''\\)\")",
       "Bash(node -e \"console.log\\(require\\(''framer-motion/package.json''\\).version\\)\")",
-      "mcp__Claude_Preview__preview_start"
+      "mcp__Claude_Preview__preview_start",
+      "Bash(npx vercel:*)"
     ]
   }
 }
