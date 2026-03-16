@@ -1,20 +1,14 @@
-import { prisma } from '../../../lib/prisma';
 import { NextResponse } from 'next/server';
+import { extractUserId, getOrCreateUser, renameHabit } from '../../../lib/users';
 
-export async function GET() {
+export async function GET(request) {
+  const userId = extractUserId(request);
+  if (!userId) return NextResponse.json({ error: 'Missing X-User-Id header' }, { status: 400 });
   try {
-    const habits = await prisma.habit.findMany({
-      orderBy: { sortOrder: 'asc' },
-    });
-    const renamed = habits.map((h) => {
-      if (h.name === 'Good Diet') return { ...h, name: 'No Sugar' };
-      if (h.name === 'Sleep Before 12') return { ...h, name: '7+ Hours of Sleep' };
-      return h;
-    });
-    return NextResponse.json(renamed);
+    const user = await getOrCreateUser(userId);
+    return NextResponse.json(user.habits.map(renameHabit));
   } catch (e) {
     console.error(e);
-    const message = process.env.NODE_ENV === 'development' ? e.message : 'Failed to fetch habits';
-    return NextResponse.json({ error: 'Failed to fetch habits', details: message }, { status: 500 });
+    return NextResponse.json({ error: 'Failed to fetch habits' }, { status: 500 });
   }
 }

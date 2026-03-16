@@ -5,7 +5,15 @@
       "Bash(node -e \"require\\(''framer-motion''\\); console.log\\(''ok''\\)\")",
       "Bash(node -e \"console.log\\(require\\(''framer-motion/package.json''\\).version\\)\")",
       "mcp__Claude_Preview__preview_start",
-      "Bash(npx vercel:*)"
+      "Bash(npx vercel:*)",
+      "Bash(curl -s \"https://fitstreak-2n3wqodxx-laddhamuku-2689s-projects.vercel.app/api/habits\")",
+      "Bash(curl -s \"https://fitstreak-2n3wqodxx-laddhamuku-2689s-projects.vercel.app/api/completions?date=2026-03-16\")",
+      "Bash(curl -s \"https://fitstreak-2n3wqodxx-laddhamuku-2689s-projects.vercel.app/api/streak\")",
+      "Bash(find '/Users/mukund/Documents/Habit app' -path */pages/api*)",
+      "Bash(curl -s \"https://fitstreak-chi.vercel.app/api/completions?date=2026-03-16\")",
+      "Bash(curl -s \"https://fitstreak-chi.vercel.app/api/habits\")",
+      "Bash(curl -sv \"https://fitstreak-chi.vercel.app/api/completions?date=2026-03-16\")",
+      "Bash(npx prisma:*)"
     ]
   }
 }

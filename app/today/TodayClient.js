@@ -3,6 +3,7 @@
 import { useMemo, useState, useEffect, useCallback } from 'react';
 import { useRouter } from 'next/navigation';
 import Onboarding from '../../components/Onboarding';
+import { getOrCreateUserId } from '../../lib/client-user';
 
 function getTodayKey() {
   return new Date().toISOString().slice(0, 10);
@@ -25,11 +26,7 @@ function shiftDateKey(key, daysDelta) {
 
 function formatLongDate(key) {
   const d = new Date(`${key}T12:00:00`);
-  return d.toLocaleDateString('en-US', {
-    month: 'long',
-    day: 'numeric',
-    year: 'numeric',
-  });
+  return d.toLocaleDateString('en-US', { month: 'long', day: 'numeric', year: 'numeric' });
 }
 
 export default function TodayClient({ initialDate }) {
@@ -41,9 +38,7 @@ export default function TodayClient({ initialDate }) {
     [initialDate, todayKey]
   );
 
-  // Onboarding: start as true (matches SSR), then check localStorage after hydration
   const [onboardingDone, setOnboardingDone] = useState(true);
-
   useEffect(() => {
     setOnboardingDone(!!localStorage.getItem('onboardingComplete'));
   }, []);
@@ -56,7 +51,6 @@ export default function TodayClient({ initialDate }) {
   const [error, setError] = useState(null);
   const [greeting, setGreeting] = useState('');
   const [glowingId, setGlowingId] = useState(null);
-  const [isInitialLoad, setIsInitialLoad] = useState(true);
 
   useEffect(() => {
     setSelectedDate(normalizedInitialDate);
@@ -67,79 +61,72 @@ export default function TodayClient({ initialDate }) {
   const totalHabits = habits.length;
   const progressPercent = totalHabits ? (completedCount / totalHabits) * 100 : 0;
 
-  const fetchHabits = useCallback(async () => {
-    const res = await fetch('/api/habits');
-    const data = await res.json().catch(() => ({}));
-    if (!res.ok) throw new Error(data.details || data.error || 'Failed to fetch habits');
-    setHabits(data);
-  }, []);
-
-  const fetchCompletions = useCallback(async (date) => {
-    const res = await fetch(`/api/completions?date=${date}`);
-    if (!res.ok) throw new Error('Failed to fetch completions');
-    const data = await res.json();
-    setCompletions(data);
-  }, []);
-
-  const fetchStreak = useCallback(async () => {
-    const res = await fetch('/api/streak');
-    if (!res.ok) return;
-    const data = await res.json();
-    setStreak(data.streak ?? 0);
-  }, []);
-
-  const load = useCallback(async () => {
+  const load = useCallback(async (date) => {
+    const userId = getOrCreateUserId();
+    if (!userId) return;
     setLoading(true);
     setError(null);
     try {
-      await Promise.all([fetchHabits(), fetchCompletions(selectedDate), fetchStreak()]);
+      const res = await fetch(`/api/dashboard?date=${date}`, {
+        headers: { 'X-User-Id': userId },
+      });
+      if (!res.ok) throw new Error('Failed to load');
+      const data = await res.json();
+      setHabits(data.habits ?? []);
+      setCompletions(data.completions ?? []);
+      setStreak(data.streak ?? 0);
     } catch (e) {
       setError(e.message);
     } finally {
       setLoading(false);
     }
-  }, [fetchHabits, fetchCompletions, fetchStreak, selectedDate]);
-
-  useEffect(() => {
-    load();
-  }, [load]);
-
-  useEffect(() => {
-    setIsInitialLoad(false);
   }, []);
 
   useEffect(() => {
+    load(selectedDate);
+  }, [load, selectedDate]);
+
+  useEffect(() => {
     const greetings = [
-      'Howdy!',
-      'Hola!',
-      "Let's win today.",
-      'Stay disciplined.',
-      'One step at a time.',
-      'Make today count.',
-      'Show up. Every day.',
-      'Build the habit.',
+      'Howdy!', 'Hola!', "Let's win today.", 'Stay disciplined.',
+      'One step at a time.', 'Make today count.', 'Show up. Every day.', 'Build the habit.',
     ];
     setGreeting(greetings[Math.floor(Math.random() * greetings.length)]);
   }, []);
 
   const toggleHabit = useCallback(
     async (habitId) => {
+      const userId = getOrCreateUserId();
+      if (!userId) return;
+
       const willComplete = !completedIds.has(habitId);
-      const res = await fetch('/api/completions', {
-        method: 'POST',
-        headers: { 'Content-Type': 'application/json' },
-        body: JSON.stringify({ habitId, date: selectedDate, completed: willComplete }),
-      });
-      if (!res.ok) return;
-      const data = await res.json();
-      setCompletions(data);
+
+      // Optimistic update
+      setCompletions((prev) =>
+        willComplete
+          ? [...prev, { habitId, id: -1, date: selectedDate }]
+          : prev.filter((c) => c.habitId !== habitId)
+      );
       if (willComplete) {
         setGlowingId(habitId);
         setTimeout(() => setGlowingId(null), 700);
       }
-      await fetchStreak();
+
+      try {
+        const res = await fetch('/api/completions', {
+          method: 'POST',
+          headers: { 'Content-Type': 'application/json', 'X-User-Id': userId },
+          body: JSON.stringify({ habitId, date: selectedDate, completed: willComplete }),
+        });
+        if (!res.ok) { load(selectedDate); return; }
+        const data = await res.json();
+        setCompletions(data.completions ?? []);
+        setStreak(data.streak ?? 0);
+      } catch {
+        load(selectedDate);
+      }
     },
-    [selectedDate, completedIds, fetchStreak]
+    [selectedDate, completedIds, load]
   );
 
   const navigateToDate = (dateKey) => {
@@ -149,13 +136,11 @@ export default function TodayClient({ initialDate }) {
   };
 
   const goPrevDay = () => navigateToDate(shiftDateKey(selectedDate, -1));
-
   const goNextDay = () => {
     if (selectedDate === todayKey) return;
     navigateToDate(clampToToday(shiftDateKey(selectedDate, 1), todayKey));
   };
 
-  // Show onboarding for first-time users
   if (!onboardingDone) {
     return <Onboarding onComplete={() => setOnboardingDone(true)} />;
   }
@@ -168,13 +153,13 @@ export default function TodayClient({ initialDate }) {
     );
   }
 
-  if (error && !isInitialLoad) {
+  if (error) {
     return (
       <main className="min-h-screen flex flex-col items-center justify-center bg-[#0f172a] px-5 pb-20">
         <p className="text-red-400 font-medium mb-4">{error}</p>
         <button
           type="button"
-          onClick={load}
+          onClick={() => load(selectedDate)}
           className="rounded-xl bg-[#1e293b] text-slate-100 px-4 py-2 font-medium border border-white/10"
         >
           Retry
@@ -185,7 +170,6 @@ export default function TodayClient({ initialDate }) {
 
   return (
     <main className="min-h-screen mx-auto max-w-[420px] px-5 py-8 pb-24 bg-[#0f172a]">
-      {/* Greeting + Streak */}
       <section className="text-center mb-8">
         {greeting && (
           <p className="text-[#94a3b8] text-sm font-semibold tracking-wide uppercase mb-2">
@@ -202,19 +186,11 @@ export default function TodayClient({ initialDate }) {
         )}
       </section>
 
-      {/* Daily checklist */}
       <section className="mb-8">
-        {/* Date navigator */}
         <div className="flex items-center justify-between gap-3 mb-5">
-          <button
-            type="button"
-            onClick={goPrevDay}
-            className="h-10 w-10 rounded-2xl bg-[#1e293b] border border-white/8 text-slate-300 flex items-center justify-center active:scale-[0.96] transition-transform"
-            aria-label="Previous day"
-          >
+          <button type="button" onClick={goPrevDay} className="h-10 w-10 rounded-2xl bg-[#1e293b] border border-white/8 text-slate-300 flex items-center justify-center active:scale-[0.96] transition-transform" aria-label="Previous day">
             <span className="text-xl leading-none">‹</span>
           </button>
-
           <div className="text-center">
             <p className="text-xs font-semibold text-[#94a3b8] uppercase tracking-wider">
               {selectedDate === todayKey ? 'Today' : 'Past day'}
@@ -223,39 +199,18 @@ export default function TodayClient({ initialDate }) {
               {formatLongDate(selectedDate)}
             </h1>
           </div>
-
-          <button
-            type="button"
-            onClick={goNextDay}
-            disabled={selectedDate === todayKey}
-            className="h-10 w-10 rounded-2xl bg-[#1e293b] border border-white/8 text-slate-300 flex items-center justify-center active:scale-[0.96] transition-transform disabled:opacity-30 disabled:active:scale-100"
-            aria-label="Next day"
-          >
+          <button type="button" onClick={goNextDay} disabled={selectedDate === todayKey} className="h-10 w-10 rounded-2xl bg-[#1e293b] border border-white/8 text-slate-300 flex items-center justify-center active:scale-[0.96] transition-transform disabled:opacity-30 disabled:active:scale-100" aria-label="Next day">
             <span className="text-xl leading-none">›</span>
           </button>
         </div>
 
-        {/* Progress */}
         <div className="rounded-2xl bg-[#1e293b] border border-white/5 shadow-card p-5 mb-4">
           <div className="flex items-baseline justify-between mb-3">
-            <p className="text-[#94a3b8] text-sm font-medium">
-              {completedCount} / {totalHabits} completed
-            </p>
-            <p className="text-[#22c55e] font-bold tabular-nums text-sm">
-              {totalHabits ? Math.round(progressPercent) : 0}%
-            </p>
+            <p className="text-[#94a3b8] text-sm font-medium">{completedCount} / {totalHabits} completed</p>
+            <p className="text-[#22c55e] font-bold tabular-nums text-sm">{totalHabits ? Math.round(progressPercent) : 0}%</p>
           </div>
-          <div
-            className="h-3 w-full rounded-full bg-slate-700/60 overflow-hidden"
-            role="progressbar"
-            aria-valuenow={totalHabits ? Math.round(progressPercent) : 0}
-            aria-valuemin={0}
-            aria-valuemax={100}
-          >
-            <div
-              className="progress-fill h-full rounded-full bg-gradient-to-r from-[#22c55e] to-[#16a34a] will-change-[width]"
-              style={{ width: `${progressPercent}%` }}
-            />
+          <div className="h-3 w-full rounded-full bg-slate-700/60 overflow-hidden" role="progressbar" aria-valuenow={totalHabits ? Math.round(progressPercent) : 0} aria-valuemin={0} aria-valuemax={100}>
+            <div className="progress-fill h-full rounded-full bg-gradient-to-r from-[#22c55e] to-[#16a34a] will-change-[width]" style={{ width: `${progressPercent}%` }} />
           </div>
         </div>
 
@@ -266,7 +221,6 @@ export default function TodayClient({ initialDate }) {
           </div>
         )}
 
-        {/* Habit cards */}
         <div className="space-y-3">
           {habits.map((habit) => (
             <button
@@ -274,40 +228,18 @@ export default function TodayClient({ initialDate }) {
               type="button"
               onClick={() => toggleHabit(habit.id)}
               className={`w-full flex items-center justify-between rounded-2xl p-5 text-left shadow-card border transition-all duration-200 focus:outline-none focus:ring-2 focus:ring-[#22c55e]/50 focus:ring-offset-2 focus:ring-offset-[#0f172a] active:scale-[0.99] ${
-                completedIds.has(habit.id)
-                  ? 'bg-[#1e293b] border-[#22c55e]/30'
-                  : 'bg-[#1e293b] border-white/5 hover:border-white/10'
+                completedIds.has(habit.id) ? 'bg-[#1e293b] border-[#22c55e]/30' : 'bg-[#1e293b] border-white/5 hover:border-white/10'
               } ${glowingId === habit.id ? 'animate-habit-glow' : ''}`}
             >
-              <span
-                className={`text-[1rem] font-semibold transition-colors ${
-                  completedIds.has(habit.id) ? 'text-[#22c55e]' : 'text-slate-100'
-                }`}
-              >
+              <span className={`text-[1rem] font-semibold transition-colors ${completedIds.has(habit.id) ? 'text-[#22c55e]' : 'text-slate-100'}`}>
                 {habit.name}
               </span>
-              <span
-                className={`flex h-6 w-6 shrink-0 items-center justify-center rounded-md border-2 transition-all duration-200 ease-out ${
-                  completedIds.has(habit.id)
-                    ? 'bg-[#22c55e] border-[#22c55e] text-white'
-                    : 'border-slate-600 bg-transparent'
-                }`}
-              >
+              <span className={`flex h-6 w-6 shrink-0 items-center justify-center rounded-md border-2 transition-all duration-200 ease-out ${completedIds.has(habit.id) ? 'bg-[#22c55e] border-[#22c55e] text-white' : 'border-slate-600 bg-transparent'}`}>
                 {completedIds.has(habit.id) ? (
-                  <svg
-                    className="h-3.5 w-3.5 animate-check-pop"
-                    fill="none"
-                    stroke="currentColor"
-                    strokeWidth="3"
-                    strokeLinecap="round"
-                    strokeLinejoin="round"
-                    viewBox="0 0 24 24"
-                  >
+                  <svg className="h-3.5 w-3.5 animate-check-pop" fill="none" stroke="currentColor" strokeWidth="3" strokeLinecap="round" strokeLinejoin="round" viewBox="0 0 24 24">
                     <path d="M5 13l4 4L19 7" />
                   </svg>
-                ) : (
-                  <span className="sr-only">Not done</span>
-                )}
+                ) : <span className="sr-only">Not done</span>}
               </span>
             </button>
           ))}
@@ -316,4 +248,3 @@ export default function TodayClient({ initialDate }) {
     </main>
   );
 }
-

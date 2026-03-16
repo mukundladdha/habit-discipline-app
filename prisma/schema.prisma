@@ -9,20 +9,31 @@ datasource db {
   directUrl = env("DIRECT_URL")
 }
 
+model User {
+  id        String   @id
+  createdAt DateTime @default(now())
+  habits    Habit[]
+}
+
 model Habit {
-  id         Int          @id @default(autoincrement())
-  name       String
-  sortOrder  Int          @default(0)
+  id          Int          @id @default(autoincrement())
+  userId      String
+  user        User         @relation(fields: [userId], references: [id], onDelete: Cascade)
+  name        String
+  sortOrder   Int          @default(0)
   completions Completion[]
+
+  @@index([userId])
 }
 
 model Completion {
   id        Int      @id @default(autoincrement())
   habitId   Int
   habit     Habit    @relation(fields: [habitId], references: [id], onDelete: Cascade)
-  date      String   // YYYY-MM-DD
+  date      String
   createdAt DateTime @default(now())
 
   @@unique([habitId, date])
+  @@index([habitId, date])
   @@index([date])
 }

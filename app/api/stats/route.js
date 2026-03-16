@@ -1,66 +1,46 @@
-import { prisma } from '../../../lib/prisma';
 import { NextResponse } from 'next/server';
+import { prisma } from '../../../lib/prisma';
+import { extractUserId, getOrCreateUser, computeStreak, renameHabit } from '../../../lib/users';
 
-export async function GET() {
+export async function GET(request) {
+  const userId = extractUserId(request);
+  if (!userId) return NextResponse.json({ error: 'Missing X-User-Id header' }, { status: 400 });
   try {
-    const habits = await prisma.habit.findMany({ orderBy: { sortOrder: 'asc' } });
+    const user = await getOrCreateUser(userId);
+    const habits = user.habits;
+    const habitIds = habits.map((h) => h.id);
     const habitCount = habits.length;
 
     if (habitCount === 0) {
       return NextResponse.json({ highest: 0, overallRate: 0, totalTrackedDays: 0, perHabit: [] });
     }
 
-    const completions = await prisma.completion.findMany({
-      select: { habitId: true, date: true },
-    });
+    const [byDateGroups, byHabitGroups] = await Promise.all([
+      prisma.completion.groupBy({
+        by: ['date'],
+        where: { habitId: { in: habitIds } },
+        _count: { date: true },
+      }),
+      prisma.completion.groupBy({
+        by: ['habitId'],
+        where: { habitId: { in: habitIds } },
+        _count: { habitId: true },
+      }),
+    ]);
 
-    // Count completions per date and per habit
-    const byDate = {};
-    const byHabit = {};
-    for (const c of completions) {
-      byDate[c.date] = (byDate[c.date] || 0) + 1;
-      byHabit[c.habitId] = (byHabit[c.habitId] || 0) + 1;
-    }
+    const totalTrackedDays = byDateGroups.length;
+    const completedDays = byDateGroups.filter((g) => g._count.date === habitCount).length;
+    const overallRate = totalTrackedDays > 0 ? Math.round((completedDays / totalTrackedDays) * 100) : 0;
+    const { highest } = computeStreak(byDateGroups, habitCount);
 
-    const allDates = Object.keys(byDate).sort();
-    const totalTrackedDays = allDates.length;
-    const completedDays = allDates.filter((d) => byDate[d] === habitCount).length;
+    const byHabitMap = {};
+    for (const g of byHabitGroups) byHabitMap[g.habitId] = g._count.habitId;
 
-    // Highest streak across all-time full days
-    const fullDays = allDates.filter((d) => byDate[d] === habitCount);
-    let highest = fullDays.length > 0 ? 1 : 0;
-    if (fullDays.length > 1) {
-      let run = 1;
-      for (let i = 1; i < fullDays.length; i++) {
-        const prev = new Date(fullDays[i - 1] + 'T12:00:00');
-        const curr = new Date(fullDays[i] + 'T12:00:00');
-        const diff = Math.round((curr - prev) / 86400000);
-        if (diff === 1) {
-          run++;
-          if (run > highest) highest = run;
-        } else {
-          run = 1;
-        }
-      }
-    }
-
-    const overallRate =
-      totalTrackedDays > 0 ? Math.round((completedDays / totalTrackedDays) * 100) : 0;
-
-    // Apply the same display-name remap as the habits API
-    const perHabit = habits.map((h) => {
-      let name = h.name;
-      if (name === 'Good Diet') name = 'No Sugar';
-      if (name === 'Sleep Before 12') name = '7+ Hours of Sleep';
-      return {
-        id: h.id,
-        name,
-        rate:
-          totalTrackedDays > 0
-            ? Math.round(((byHabit[h.id] || 0) / totalTrackedDays) * 100)
-            : 0,
-      };
-    });
+    const perHabit = habits.map((h) => ({
+      id: h.id,
+      name: renameHabit(h).name,
+      rate: totalTrackedDays > 0 ? Math.round(((byHabitMap[h.id] || 0) / totalTrackedDays) * 100) : 0,
+    }));
 
     return NextResponse.json({ highest, overallRate, totalTrackedDays, perHabit });
   } catch (e) {
