@@ -4,28 +4,30 @@ import { useMemo, useState, useEffect, useCallback, useRef } from 'react';
 import { useRouter } from 'next/navigation';
 import Onboarding from '../../components/Onboarding';
 import { getOrCreateUserId } from '../../lib/client-user';
+import {
+  enqueueSyncItem,
+  saveDashboardCache,
+  getDashboardCache,
+  getAllSyncItems,
+} from '../../lib/idb';
 
 // ─── date helpers ────────────────────────────────────────────────────────────
 
 function getTodayKey() {
   return new Date().toISOString().slice(0, 10);
 }
-
 function isValidDateKey(key) {
   return typeof key === 'string' && /^\d{4}-\d{2}-\d{2}$/.test(key);
 }
-
 function clampToToday(key, todayKey) {
   if (!isValidDateKey(key)) return todayKey;
   return key > todayKey ? todayKey : key;
 }
-
 function shiftDateKey(key, daysDelta) {
   const d = new Date(`${key}T12:00:00`);
   d.setDate(d.getDate() + daysDelta);
   return d.toISOString().slice(0, 10);
 }
-
 function formatLongDate(key) {
   const d = new Date(`${key}T12:00:00`);
   return d.toLocaleDateString('en-US', { month: 'long', day: 'numeric', year: 'numeric' });
@@ -35,8 +37,8 @@ function formatLongDate(key) {
 
 const EMPTY_STATE = {
   habits:      [],
-  completions: [],   // [{id, habitId, date}] for the selected date
-  calendar:    null, // {year, month, days:[{date,completed,total,full}]}
+  completions: [],
+  calendar:    null,
   stats:       { streak: 0, highest: 0, rate: 0, progress: 0 },
 };
 
@@ -51,31 +53,30 @@ export default function TodayClient({ initialDate }) {
     [initialDate, todayKey]
   );
 
-  // ── onboarding (SSR-safe: default true avoids hydration mismatch) ──────────
+  // ── onboarding (SSR-safe) ──────────────────────────────────────────────────
   const [onboardingDone, setOnboardingDone] = useState(true);
   useEffect(() => {
     setOnboardingDone(!!localStorage.getItem('onboardingComplete'));
   }, []);
 
-  // ── core UI state ──────────────────────────────────────────────────────────
-  const [selectedDate, setSelectedDate] = useState(normalizedInitialDate);
+  // ── core state ─────────────────────────────────────────────────────────────
+  const [selectedDate, setSelectedDate]     = useState(normalizedInitialDate);
   const [dashboardState, setDashboardState] = useState(EMPTY_STATE);
-  const [loading, setLoading]   = useState(true);
-  const [error, setError]       = useState(null);
-  const [greeting, setGreeting] = useState('');
-  const [glowingId, setGlowingId] = useState(null);
+  const [loading, setLoading]               = useState(true);
+  const [error, setError]                   = useState(null);
+  const [greeting, setGreeting]             = useState('');
+  const [glowingId, setGlowingId]           = useState(null);
+  const [isOffline, setIsOffline]           = useState(false);
 
-  // pendingHabits: Set of habitIds with in-flight toggle requests.
-  // Prevents double-tap race conditions — a second tap is ignored while
-  // a request for that habit is still in-flight.
+  // Double-tap guard
   const pendingHabits = useRef(new Set());
 
-  // ── sync selectedDate when prop changes ───────────────────────────────────
+  // ── date sync ──────────────────────────────────────────────────────────────
   useEffect(() => {
     setSelectedDate(normalizedInitialDate);
   }, [normalizedInitialDate]);
 
-  // ── greeting (randomised once on mount) ───────────────────────────────────
+  // ── greeting ───────────────────────────────────────────────────────────────
   useEffect(() => {
     const greetings = [
       'Howdy!', 'Hola!', "Let's win today.", 'Stay disciplined.',
@@ -84,47 +85,128 @@ export default function TodayClient({ initialDate }) {
     setGreeting(greetings[Math.floor(Math.random() * greetings.length)]);
   }, []);
 
-  // ── load dashboard (date change / retry) ──────────────────────────────────
+  // ── network status ─────────────────────────────────────────────────────────
+  useEffect(() => {
+    setIsOffline(!navigator.onLine);
+    const handleOnline  = () => setIsOffline(false);
+    const handleOffline = () => setIsOffline(true);
+    window.addEventListener('online',  handleOnline);
+    window.addEventListener('offline', handleOffline);
+    return () => {
+      window.removeEventListener('online',  handleOnline);
+      window.removeEventListener('offline', handleOffline);
+    };
+  }, []);
+
+  // ─────────────────────────────────────────────────────────────────────────
+  // Apply any pending offline completions on top of a dashboard snapshot.
+  // Called after both online loads and IDB cache reads so the UI always
+  // reflects locally queued items even before they reach the server.
+  // ─────────────────────────────────────────────────────────────────────────
+  const applyPendingItems = useCallback(async (snapshot, date) => {
+    const pending = await getAllSyncItems();
+    const forDate = pending.filter((item) => item.date === date);
+    if (forDate.length === 0) return snapshot;
+
+    let completions = [...snapshot.completions];
+    for (const item of forDate) {
+      if (item.completed) {
+        const alreadyIn = completions.some((c) => c.habitId === item.habitId);
+        if (!alreadyIn) {
+          completions.push({ id: -item.id, habitId: item.habitId, date });
+        }
+      } else {
+        completions = completions.filter((c) => c.habitId !== item.habitId);
+      }
+    }
+    return { ...snapshot, completions };
+  }, []);
+
+  // ─────────────────────────────────────────────────────────────────────────
+  // Load dashboard — tries network first, falls back to IDB cache.
+  // ─────────────────────────────────────────────────────────────────────────
   const load = useCallback(async (date) => {
     const userId = getOrCreateUserId();
     if (!userId) return;
+
     setLoading(true);
     setError(null);
+
     try {
       const res = await fetch(`/api/dashboard?date=${date}`, {
         headers: { 'X-User-Id': userId },
       });
-      if (!res.ok) throw new Error('Failed to load dashboard');
+
+      if (!res.ok) throw new Error('Server error');
+
       const data = await res.json();
-      setDashboardState({
-        habits:      data.habits      ?? [],
-        completions: data.completions ?? [],
-        calendar:    data.calendar    ?? null,
-        stats:       data.stats       ?? EMPTY_STATE.stats,
-      });
-    } catch (e) {
-      setError(e.message);
+
+      // Persist to IDB so we have it when offline
+      await saveDashboardCache(date, data);
+
+      // Reconcile with any offline items queued while fetching
+      const reconciled = await applyPendingItems(
+        {
+          habits:      data.habits      ?? [],
+          completions: data.completions ?? [],
+          calendar:    data.calendar    ?? null,
+          stats:       data.stats       ?? EMPTY_STATE.stats,
+        },
+        date
+      );
+      setDashboardState(reconciled);
+      setIsOffline(false);
+    } catch {
+      // ── Offline fallback: try IDB cache ──────────────────────────────────
+      const cached = await getDashboardCache(date);
+      if (cached) {
+        const reconciled = await applyPendingItems(
+          {
+            habits:      cached.habits      ?? [],
+            completions: cached.completions ?? [],
+            calendar:    cached.calendar    ?? null,
+            stats:       cached.stats       ?? EMPTY_STATE.stats,
+          },
+          date
+        );
+        setDashboardState(reconciled);
+        setIsOffline(true);
+      } else {
+        // No cache either — show error
+        setError('No cached data available. Connect to load your habits.');
+        setIsOffline(true);
+      }
     } finally {
       setLoading(false);
     }
-  }, []);
+  }, [applyPendingItems]);
 
   useEffect(() => {
     load(selectedDate);
   }, [load, selectedDate]);
 
-  // ── derived values ─────────────────────────────────────────────────────────
+  // ── Reload when sync completes (online event in NetworkBanner) ─────────────
+  useEffect(() => {
+    const handleSyncComplete = () => load(selectedDate);
+    window.addEventListener('sync-complete', handleSyncComplete);
+    return () => window.removeEventListener('sync-complete', handleSyncComplete);
+  }, [load, selectedDate]);
+
+  // ─────────────────────────────────────────────────────────────────────────
+  // Derived values
+  // ─────────────────────────────────────────────────────────────────────────
   const { habits, completions, stats } = dashboardState;
   const completedIds    = new Set(completions.map((c) => c.habitId));
   const completedCount  = completions.length;
   const totalHabits     = habits.length;
   const progressPercent = totalHabits ? (completedCount / totalHabits) * 100 : 0;
 
-  // ── toggle a habit ─────────────────────────────────────────────────────────
+  // ─────────────────────────────────────────────────────────────────────────
+  // Toggle a habit — works online and offline
+  // ─────────────────────────────────────────────────────────────────────────
   const toggleHabit = useCallback(
     async (habitId) => {
-      // Double-tap guard: ignore if this habit already has a request in flight
-      if (pendingHabits.current.has(habitId)) return;
+      if (pendingHabits.current.has(habitId)) return; // double-tap guard
       pendingHabits.current.add(habitId);
 
       const userId = getOrCreateUserId();
@@ -132,26 +214,24 @@ export default function TodayClient({ initialDate }) {
 
       const willComplete = !completedIds.has(habitId);
 
-      // ── optimistic update ────────────────────────────────────────────────
+      // ── Optimistic UI + calendar patch ────────────────────────────────
       setDashboardState((prev) => {
         const newCompletions = willComplete
-          ? [...prev.completions, { id: -1, habitId, date: selectedDate }]
+          ? [...prev.completions, { id: -Date.now(), habitId, date: selectedDate }]
           : prev.completions.filter((c) => c.habitId !== habitId);
 
-        // Also update the calendar day for today optimistically
         let newCalendar = prev.calendar;
         if (prev.calendar) {
-          const newCount = newCompletions.filter((c) => c.date === selectedDate).length;
+          const count = newCompletions.filter((c) => c.date === selectedDate).length;
           newCalendar = {
             ...prev.calendar,
             days: prev.calendar.days.map((day) =>
               day.date === selectedDate
-                ? { ...day, completed: newCount, full: prev.habits.length > 0 && newCount === prev.habits.length }
+                ? { ...day, completed: count, full: prev.habits.length > 0 && count === prev.habits.length }
                 : day
             ),
           };
         }
-
         return { ...prev, completions: newCompletions, calendar: newCalendar };
       });
 
@@ -160,7 +240,16 @@ export default function TodayClient({ initialDate }) {
         setTimeout(() => setGlowingId(null), 700);
       }
 
-      // ── server write ─────────────────────────────────────────────────────
+      // ── If offline: save to IDB queue, done ───────────────────────────
+      if (!navigator.onLine) {
+        await enqueueSyncItem({ habitId, date: selectedDate, completed: willComplete, userId });
+        // Signal NetworkBanner to refresh its count
+        window.dispatchEvent(new Event('offline-item-queued'));
+        pendingHabits.current.delete(habitId);
+        return;
+      }
+
+      // ── Online: POST to server ────────────────────────────────────────
       try {
         const res = await fetch('/api/complete', {
           method:  'POST',
@@ -168,23 +257,18 @@ export default function TodayClient({ initialDate }) {
           body:    JSON.stringify({ habitId, date: selectedDate, completed: willComplete }),
         });
 
-        if (!res.ok) {
-          // Server rejected — roll back to server truth
-          load(selectedDate);
-          return;
-        }
+        if (!res.ok) { load(selectedDate); return; }
 
         const data = await res.json();
-
-        // Reconcile: patch completions + stats with server values.
-        // Calendar stays as our optimistic version (already correct).
         setDashboardState((prev) => ({
           ...prev,
           completions: data.completions ?? prev.completions,
           stats:       data.stats       ?? prev.stats,
         }));
       } catch {
-        load(selectedDate); // network error — reload full state
+        // Network dropped between the check and the fetch — queue it
+        await enqueueSyncItem({ habitId, date: selectedDate, completed: willComplete, userId });
+        window.dispatchEvent(new Event('offline-item-queued'));
       } finally {
         pendingHabits.current.delete(habitId);
       }
@@ -192,7 +276,7 @@ export default function TodayClient({ initialDate }) {
     [selectedDate, completedIds, load]
   );
 
-  // ── date navigation ────────────────────────────────────────────────────────
+  // ─── date navigation ──────────────────────────────────────────────────────
   const navigateToDate = useCallback((dateKey) => {
     setSelectedDate(dateKey);
     if (dateKey === todayKey) router.replace('/today');
@@ -206,7 +290,6 @@ export default function TodayClient({ initialDate }) {
   };
 
   // ─── early returns ────────────────────────────────────────────────────────
-
   if (!onboardingDone) {
     return <Onboarding onComplete={() => setOnboardingDone(true)} />;
   }
@@ -222,7 +305,9 @@ export default function TodayClient({ initialDate }) {
   if (error) {
     return (
       <main className="min-h-screen flex flex-col items-center justify-center bg-[#0f172a] px-5 pb-20">
-        <p className="text-red-400 font-medium mb-4">{error}</p>
+        <p className="text-4xl mb-4">📡</p>
+        <p className="text-slate-300 font-semibold mb-2">You're offline</p>
+        <p className="text-[#94a3b8] text-sm text-center mb-6">{error}</p>
         <button
           type="button"
           onClick={() => load(selectedDate)}
@@ -235,7 +320,6 @@ export default function TodayClient({ initialDate }) {
   }
 
   // ─── render ───────────────────────────────────────────────────────────────
-
   return (
     <main className="min-h-screen mx-auto max-w-[420px] px-5 py-8 pb-24 bg-[#0f172a]">
 

@@ -1,0 +1,1 @@
+self.addEventListener("activate",()=>{self.clients.matchAll({type:"window"}).then(e=>{e.forEach(e=>e.postMessage({type:"SW_READY"}))})}),self.addEventListener("message",e=>{var t;"SKIP_WAITING"===(null===(t=e.data)||void 0===t?void 0:t.type)&&self.skipWaiting()});
