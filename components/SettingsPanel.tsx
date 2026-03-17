@@ -13,7 +13,7 @@
  * - On any change: calls onHabitsChanged() so TodayClient can clear cache + reload
  */
 
-import { useEffect, useRef, useState, useCallback } from 'react';
+import { useEffect, useRef, useState, useCallback, useMemo } from 'react';
 import { getOrCreateUserId } from '../lib/client-user';
 import CustomHabitModal from './CustomHabitModal';
 
@@ -35,8 +35,10 @@ export default function SettingsPanel({ onClose, onHabitsChanged }: Props) {
   const [busy, setBusy]             = useState<number | null>(null);  // habitId being mutated
   const [error, setError]           = useState('');
   const panelRef                    = useRef<HTMLDivElement>(null);
+  // Track whether any habit was changed so we only signal parent on close
+  const dirtyRef                    = useRef(false);
 
-  const userId = getOrCreateUserId();
+  const userId = useMemo(() => getOrCreateUserId(), []);
 
   const fetchHabits = useCallback(async () => {
     setLoading(true);
@@ -54,7 +56,7 @@ export default function SettingsPanel({ onClose, onHabitsChanged }: Props) {
 
   useEffect(() => { fetchHabits(); }, [fetchHabits]);
 
-  // Close on backdrop click
+  // Close on backdrop click or X button — onClose already handles reload
   const handleBackdrop = (e: React.MouseEvent<HTMLDivElement>) => {
     if (e.target === e.currentTarget) onClose();
   };
@@ -70,7 +72,10 @@ export default function SettingsPanel({ onClose, onHabitsChanged }: Props) {
       const data = await res.json();
       if (!res.ok) { setError(data.error ?? 'Error'); return false; }
       setHabits(data.habits ?? []);
-      onHabitsChanged();
+      // Mark dirty — parent will be notified when panel is dismissed, not right now.
+      // This prevents the panel from closing mid-interaction.
+      dirtyRef.current = true;
+      onHabitsChanged(); // just busts cache; does NOT close the panel
       return true;
     } catch {
       setError('Network error. Try again.');

@@ -11,7 +11,7 @@
  * - On confirm: POST /api/habits/bulk-create → calls onComplete()
  */
 
-import { useState } from 'react';
+import { useState, useMemo } from 'react';
 import { getOrCreateUserId } from '../lib/client-user';
 import CustomHabitModal from './CustomHabitModal';
 
@@ -46,10 +46,11 @@ export default function HabitSelection({ onComplete }: Props) {
   const [loading, setLoading]       = useState(false);
   const [error, setError]           = useState('');
 
-  const allOptions = [
+  // Memoize so adding a custom habit doesn't recreate the whole list
+  const allOptions = useMemo(() => [
     ...PRESETS.map((p) => ({ name: p.name, icon: p.icon })),
     ...customs.map((n)  => ({ name: n, icon: '✨' })),
-  ];
+  ], [customs]);
 
   const toggle = (name: string) => {
     setSelected((prev) => {
@@ -120,22 +121,24 @@ export default function HabitSelection({ onComplete }: Props) {
               type="button"
               onClick={() => toggle(opt.name)}
               disabled={atMax}
-              style={{ animationDelay: `${i * 50}ms` }}
               className={[
-                'rounded-2xl p-4 flex flex-col items-center gap-2 border-2 transition-all duration-200',
-                'active:scale-[0.96] disabled:opacity-40 disabled:cursor-not-allowed',
+                'rounded-2xl p-4 flex flex-col items-center gap-2 border-2',
+                // Only transition border-color + colors, NOT all props (avoids 200ms lag)
+                'transition-[border-color,background-color,color] duration-100',
+                'active:scale-[0.96] transition-transform disabled:opacity-40 disabled:cursor-not-allowed',
                 isSelected
-                  ? 'bg-[#22c55e]/10 border-[#22c55e] shadow-[0_0_12px_rgba(34,197,94,0.2)]'
+                  ? 'bg-[#22c55e]/10 border-[#22c55e]'
                   : 'bg-[#1e293b] border-white/5',
               ].join(' ')}
             >
-              <span className="text-2xl">{opt.icon}</span>
+              <span className="text-2xl leading-none">{opt.icon}</span>
               <span className={`text-xs font-semibold text-center leading-tight ${isSelected ? 'text-[#22c55e]' : 'text-slate-200'}`}>
                 {opt.name}
               </span>
-              {isSelected && (
-                <span className="text-[#22c55e] text-xs font-bold">✓</span>
-              )}
+              {/* Fixed-height checkmark slot so cards don't shift on select */}
+              <span className="h-3 flex items-center">
+                {isSelected && <span className="text-[#22c55e] text-xs font-bold">✓</span>}
+              </span>
             </button>
           );
         })}
@@ -147,12 +150,13 @@ export default function HabitSelection({ onComplete }: Props) {
           disabled={selected.length >= MAX}
           className={[
             'rounded-2xl p-4 flex flex-col items-center gap-2 border-2 border-dashed',
-            'transition-all duration-200 active:scale-[0.96] disabled:opacity-40 disabled:cursor-not-allowed',
+            'active:scale-[0.96] transition-transform disabled:opacity-40 disabled:cursor-not-allowed',
             'border-slate-600 bg-transparent',
           ].join(' ')}
         >
-          <span className="text-2xl">➕</span>
+          <span className="text-2xl leading-none">➕</span>
           <span className="text-xs font-semibold text-slate-400 text-center">Add your habit</span>
+          <span className="h-3" />
         </button>
       </div>
 

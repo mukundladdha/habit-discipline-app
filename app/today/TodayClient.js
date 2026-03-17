@@ -299,11 +299,16 @@ export default function TodayClient({ initialDate }) {
   }, [selectedDate, load]); // completedIds via ref — stable
 
   // ─── settings / habit changes ─────────────────────────────────────────────
+  // Called by SettingsPanel after any add/remove/toggle — busts cache only,
+  // does NOT close the panel (user stays to make more changes).
   const handleHabitsChanged = useCallback(() => {
-    // Bust cache for today so next load fetches fresh active habits from server
     clearCachedDashboard(selectedDate);
+  }, [selectedDate]);
+
+  // Called when the panel is dismissed (✕ or backdrop) — reload if needed.
+  const handleSettingsClose = useCallback(() => {
     setShowSettings(false);
-    load(selectedDate, false); // silent background reload
+    load(selectedDate, false); // silent refresh so Today shows updated habits
   }, [selectedDate, load]);
 
   // ─── navigation ───────────────────────────────────────────────────────────
@@ -342,7 +347,7 @@ export default function TodayClient({ initialDate }) {
       {/* Settings panel */}
       {showSettings && (
         <SettingsPanel
-          onClose={() => setShowSettings(false)}
+          onClose={handleSettingsClose}
           onHabitsChanged={handleHabitsChanged}
         />
       )}
