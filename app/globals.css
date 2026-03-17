@@ -53,6 +53,217 @@
 }
 
 /* ══════════════════════════════════════════════════════════════
+   LOADING DASHBOARD (animated climbing path)
+   ══════════════════════════════════════════════════════════════ */
+
+.loading-db-root {
+  min-height: 100vh;
+  max-width: 420px;
+  margin: 0 auto;
+  padding: 3rem 1.25rem 6rem;
+  background: #0f172a;
+  display: flex;
+  flex-direction: column;
+  align-items: center;
+}
+
+/* ── Climbing path wrapper ───────────────────────────────────── */
+.loading-db-path-wrap {
+  position: relative;
+  width: 2px;
+  height: 140px;
+  margin-bottom: 28px;
+}
+
+/* Glowing vertical line */
+.loading-db-line {
+  position: absolute;
+  inset: 0;
+  background: linear-gradient(to top, #22c55e 0%, rgba(34, 197, 94, 0.1) 100%);
+  border-radius: 1px;
+  animation: path-line-glow 2s ease-in-out infinite alternate;
+}
+
+@keyframes path-line-glow {
+  from { opacity: 0.35; }
+  to   { opacity: 1;    }
+}
+
+/* Milestone nodes — each pulses with a staggered delay */
+.loading-db-node {
+  position: absolute;
+  left: 50%;
+  transform: translate(-50%, 50%);
+  width: 9px;
+  height: 9px;
+  border-radius: 50%;
+  background: #1e293b;
+  border: 2px solid rgba(34, 197, 94, 0.25);
+  animation: node-cycle 1.5s ease-in-out infinite alternate;
+}
+
+@keyframes node-cycle {
+  0%   { border-color: rgba(34,197,94,0.25); background: #1e293b;  box-shadow: none; }
+  100% { border-color: #22c55e;              background: #22c55e;  box-shadow: 0 0 7px 2px rgba(34,197,94,0.45); }
+}
+
+/* The rising climber dot */
+.loading-db-climber {
+  position: absolute;
+  left: 50%;
+  transform: translateX(-50%);
+  width: 13px;
+  height: 13px;
+  border-radius: 50%;
+  background: #22c55e;
+  box-shadow: 0 0 12px 4px rgba(34, 197, 94, 0.55);
+  animation: climber-rise 2.2s cubic-bezier(0.45, 0, 0.55, 1) infinite;
+  will-change: bottom, opacity;
+}
+
+@keyframes climber-rise {
+  0%   { bottom: 0%;    opacity: 0; }
+  8%   { bottom: 0%;    opacity: 1; }
+  82%  { bottom: 100%;  opacity: 1; }
+  90%  { bottom: 100%;  opacity: 0; }
+  91%  { bottom: 0%;    opacity: 0; }
+  100% { bottom: 0%;    opacity: 0; }
+}
+
+/* Rotating motivational message */
+.loading-db-msg {
+  font-size: 0.88rem;
+  font-weight: 500;
+  color: #64748b;
+  letter-spacing: 0.03em;
+  text-align: center;
+  margin-bottom: 2rem;
+  animation: msg-swap 0.35s ease-out;
+  font-family: var(--font-inter), system-ui, sans-serif;
+}
+
+@keyframes msg-swap {
+  from { opacity: 0; transform: translateY(5px); }
+  to   { opacity: 1; transform: translateY(0);   }
+}
+
+/* Skeleton container */
+.loading-db-skeletons {
+  width: 100%;
+  display: flex;
+  flex-direction: column;
+  gap: 0; /* individual items have mb */
+}
+
+/* ══════════════════════════════════════════════════════════════
+   SKELETON SHIMMER (shared between LoadingDashboard + Skeleton* components)
+   ══════════════════════════════════════════════════════════════ */
+
+/* The shimmer keyframe — uses background-position trick, GPU-accelerated */
+@keyframes shimmer {
+  0%   { background-position: -400% 0; }
+  100% { background-position:  400% 0; }
+}
+
+/* Reusable shimmer mixin via CSS custom property */
+.skel-shimmer {
+  background: linear-gradient(
+    90deg,
+    #1e293b 20%,
+    #263548 40%,
+    #2c3e55 50%,
+    #263548 60%,
+    #1e293b 80%
+  );
+  background-size: 400% 100%;
+  animation: shimmer 1.8s ease-in-out infinite;
+}
+
+/* ── Skeleton building blocks ────────────────────────────────── */
+
+.skel-card {
+  border-radius: 16px;
+  background: #1e293b;
+  border: 1px solid rgba(255, 255, 255, 0.05);
+  padding: 20px;
+  margin-bottom: 12px;
+  width: 100%;
+}
+
+/* Short label line */
+.skel-row-sm {
+  height: 12px;
+  width: 50%;
+  border-radius: 6px;
+  background: linear-gradient(90deg, #263548 20%, #2c3e55 40%, #263548 60%);
+  background-size: 400% 100%;
+  animation: shimmer 1.8s ease-in-out infinite;
+}
+
+/* Full-width progress bar */
+.skel-bar {
+  height: 12px;
+  width: 100%;
+  border-radius: 6px;
+  margin-top: 12px;
+  background: linear-gradient(90deg, #263548 20%, #2c3e55 40%, #263548 60%);
+  background-size: 400% 100%;
+  animation: shimmer 1.8s ease-in-out infinite;
+}
+
+/* Habit row shell */
+.skel-habit-row {
+  height: 72px;
+  border-radius: 16px;
+  background: #1e293b;
+  border: 1px solid rgba(255, 255, 255, 0.05);
+  padding: 20px;
+  margin-bottom: 12px;
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  width: 100%;
+}
+
+/* Name text shimmer */
+.skel-text {
+  height: 14px;
+  border-radius: 6px;
+  background: linear-gradient(90deg, #263548 20%, #2c3e55 40%, #263548 60%);
+  background-size: 400% 100%;
+  animation: shimmer 1.8s ease-in-out infinite;
+}
+
+/* Checkbox shimmer */
+.skel-check-box {
+  width: 24px;
+  height: 24px;
+  border-radius: 6px;
+  flex-shrink: 0;
+  background: linear-gradient(90deg, #263548 20%, #2c3e55 40%, #263548 60%);
+  background-size: 400% 100%;
+  animation: shimmer 1.8s ease-in-out infinite;
+}
+
+/* Stat card (used in SkeletonStats) */
+.skel-stat-card {
+  height: 100px;
+  border-radius: 16px;
+  background: linear-gradient(90deg, #1e293b 20%, #263548 40%, #1e293b 60%);
+  background-size: 400% 100%;
+  animation: shimmer 1.8s ease-in-out infinite;
+}
+
+/* Calendar cell (used in SkeletonCalendar) */
+.skel-cal-cell {
+  aspect-ratio: 1;
+  border-radius: 10px;
+  background: linear-gradient(90deg, #263548 20%, #2c3e55 40%, #263548 60%);
+  background-size: 400% 100%;
+  animation: shimmer 1.8s ease-in-out infinite;
+}
+
+/* ══════════════════════════════════════════════════════════════
    SPLASH SCREEN
    ══════════════════════════════════════════════════════════════ */
 

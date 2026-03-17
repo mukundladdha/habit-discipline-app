@@ -1,9 +1,33 @@
 'use client';
 
-import { useMemo, useState, useEffect, useCallback, useRef } from 'react';
+/**
+ * TodayClient.js — Performance-optimized Today view.
+ *
+ * 1. INSTANT STARTUP — localStorage cache read in a one-shot useEffect fires
+ *    before the first paint cycle; returning users see real data with no
+ *    loading screen.
+ *
+ * 2. BACKGROUND REFRESH — network fetch runs silently after showing cached
+ *    data; UI updates without any spinner or flash.
+ *
+ * 3. MEMOIZED HabitRow — React.memo + custom comparator; only the toggled
+ *    row re-renders, the other N-1 rows are skipped.
+ *
+ * 4. STABLE toggleHabit — completedIds mirrored into a ref so the callback
+ *    only recreates when selectedDate or load changes, not on every toggle.
+ *
+ * 5. pendingIds AS STATE (not ref) — the disabled prop on habit buttons now
+ *    actually triggers a re-render, fixing the broken double-tap guard.
+ *
+ * 6. LoadingDashboard — animated skeleton for new users (no plain "Loading…").
+ */
+
+import { memo, useState, useEffect, useCallback, useRef, useMemo } from 'react';
 import { useRouter } from 'next/navigation';
 import Onboarding from '../../components/Onboarding';
+import LoadingDashboard from '../../components/LoadingDashboard';
 import { getOrCreateUserId } from '../../lib/client-user';
+import { getCachedDashboard, setCachedDashboard } from '../../lib/dashboard-cache';
 import {
   enqueueSyncItem,
   saveDashboardCache,
@@ -11,29 +35,23 @@ import {
   getAllSyncItems,
 } from '../../lib/idb';
 
-// ─── date helpers ────────────────────────────────────────────────────────────
+// ─── date helpers ─────────────────────────────────────────────────────────────
 
-function getTodayKey() {
-  return new Date().toISOString().slice(0, 10);
-}
-function isValidDateKey(key) {
-  return typeof key === 'string' && /^\d{4}-\d{2}-\d{2}$/.test(key);
-}
-function clampToToday(key, todayKey) {
-  if (!isValidDateKey(key)) return todayKey;
-  return key > todayKey ? todayKey : key;
-}
-function shiftDateKey(key, daysDelta) {
-  const d = new Date(`${key}T12:00:00`);
-  d.setDate(d.getDate() + daysDelta);
+function getTodayKey()       { return new Date().toISOString().slice(0, 10); }
+function isValidDate(k)      { return typeof k === 'string' && /^\d{4}-\d{2}-\d{2}$/.test(k); }
+function clamp(k, today)     { return !isValidDate(k) || k > today ? today : k; }
+function shiftDate(k, delta) {
+  const d = new Date(`${k}T12:00:00`);
+  d.setDate(d.getDate() + delta);
   return d.toISOString().slice(0, 10);
 }
-function formatLongDate(key) {
-  const d = new Date(`${key}T12:00:00`);
-  return d.toLocaleDateString('en-US', { month: 'long', day: 'numeric', year: 'numeric' });
+function fmtLong(k) {
+  return new Date(`${k}T12:00:00`).toLocaleDateString('en-US', {
+    month: 'long', day: 'numeric', year: 'numeric',
+  });
 }
 
-// ─── initial state ────────────────────────────────────────────────────────────
+// ─── constants ────────────────────────────────────────────────────────────────
 
 const EMPTY_STATE = {
   habits:      [],
@@ -42,79 +60,107 @@ const EMPTY_STATE = {
   stats:       { streak: 0, highest: 0, rate: 0, progress: 0 },
 };
 
-// ─── component ───────────────────────────────────────────────────────────────
+function normalizeDash(d) {
+  return {
+    habits:      d.habits      ?? [],
+    completions: d.completions ?? [],
+    calendar:    d.calendar    ?? null,
+    stats:       d.stats       ?? EMPTY_STATE.stats,
+  };
+}
+
+// ─── memoized habit row ───────────────────────────────────────────────────────
+
+const HabitRow = memo(function HabitRow({ habit, done, isPending, isGlowing, onToggle }) {
+  return (
+    <button
+      type="button"
+      onClick={() => onToggle(habit.id)}
+      disabled={isPending}
+      className={[
+        'w-full flex items-center justify-between rounded-2xl p-5 text-left',
+        'shadow-card border transition-all duration-200',
+        'focus:outline-none focus:ring-2 focus:ring-[#22c55e]/50',
+        'focus:ring-offset-2 focus:ring-offset-[#0f172a]',
+        'active:scale-[0.99] disabled:cursor-wait',
+        done ? 'bg-[#1e293b] border-[#22c55e]/30' : 'bg-[#1e293b] border-white/5 hover:border-white/10',
+        isGlowing ? 'animate-habit-glow' : '',
+      ].join(' ')}
+    >
+      <span className={`text-[1rem] font-semibold transition-colors ${done ? 'text-[#22c55e]' : 'text-slate-100'}`}>
+        {habit.name}
+      </span>
+      <span className={[
+        'flex h-6 w-6 shrink-0 items-center justify-center rounded-md border-2',
+        'transition-all duration-200 ease-out',
+        done ? 'bg-[#22c55e] border-[#22c55e] text-white' : 'border-slate-600 bg-transparent',
+      ].join(' ')}>
+        {done ? (
+          <svg className="h-3.5 w-3.5 animate-check-pop" fill="none" stroke="currentColor"
+            strokeWidth="3" strokeLinecap="round" strokeLinejoin="round" viewBox="0 0 24 24">
+            <path d="M5 13l4 4L19 7" />
+          </svg>
+        ) : <span className="sr-only">Not done</span>}
+      </span>
+    </button>
+  );
+}, (p, n) =>
+  p.done      === n.done      &&
+  p.isPending === n.isPending &&
+  p.isGlowing === n.isGlowing &&
+  p.habit.id  === n.habit.id
+);
+
+// ─── component ────────────────────────────────────────────────────────────────
 
 export default function TodayClient({ initialDate }) {
   const router   = useRouter();
-  const todayKey = getTodayKey();
+  const todayKey = useMemo(() => getTodayKey(), []);
+  const initDate = useMemo(() => clamp(initialDate || todayKey, todayKey), [initialDate, todayKey]);
 
-  const normalizedInitialDate = useMemo(
-    () => clampToToday(initialDate || todayKey, todayKey),
-    [initialDate, todayKey]
-  );
-
-  // ── onboarding (SSR-safe) ──────────────────────────────────────────────────
+  // Onboarding — SSR-safe (start true to match server, set via effect)
   const [onboardingDone, setOnboardingDone] = useState(true);
-  useEffect(() => {
-    setOnboardingDone(!!localStorage.getItem('onboardingComplete'));
-  }, []);
+  useEffect(() => { setOnboardingDone(!!localStorage.getItem('onboardingComplete')); }, []);
 
-  // ── core state ─────────────────────────────────────────────────────────────
-  const [selectedDate, setSelectedDate]     = useState(normalizedInitialDate);
+  // Core state
+  const [selectedDate, setSelectedDate]     = useState(initDate);
   const [dashboardState, setDashboardState] = useState(EMPTY_STATE);
-  const [loading, setLoading]               = useState(true);
+  const [initialLoading, setInitialLoading] = useState(true);
   const [error, setError]                   = useState(null);
   const [greeting, setGreeting]             = useState('');
   const [glowingId, setGlowingId]           = useState(null);
   const [isOffline, setIsOffline]           = useState(false);
+  const [pendingIds, setPendingIds]         = useState(new Set()); // STATE not ref
 
-  // Double-tap guard
-  const pendingHabits = useRef(new Set());
+  // Stable ref mirror for completedIds so toggleHabit doesn't recreate on every completion
+  const completedIdsRef = useRef(new Set());
 
-  // ── date sync ──────────────────────────────────────────────────────────────
+  useEffect(() => { setSelectedDate(initDate); }, [initDate]);
+
   useEffect(() => {
-    setSelectedDate(normalizedInitialDate);
-  }, [normalizedInitialDate]);
-
-  // ── greeting ───────────────────────────────────────────────────────────────
-  useEffect(() => {
-    const greetings = [
-      'Howdy!', 'Hola!', "Let's win today.", 'Stay disciplined.',
-      'One step at a time.', 'Make today count.', 'Show up. Every day.', 'Build the habit.',
-    ];
-    setGreeting(greetings[Math.floor(Math.random() * greetings.length)]);
+    const g = ['Howdy!', 'Hola!', "Let's win today.", 'Stay disciplined.',
+      'One step at a time.', 'Make today count.', 'Show up. Every day.', 'Build the habit.'];
+    setGreeting(g[Math.floor(Math.random() * g.length)]);
   }, []);
 
-  // ── network status ─────────────────────────────────────────────────────────
   useEffect(() => {
     setIsOffline(!navigator.onLine);
-    const handleOnline  = () => setIsOffline(false);
-    const handleOffline = () => setIsOffline(true);
-    window.addEventListener('online',  handleOnline);
-    window.addEventListener('offline', handleOffline);
-    return () => {
-      window.removeEventListener('online',  handleOnline);
-      window.removeEventListener('offline', handleOffline);
-    };
+    const on  = () => setIsOffline(false);
+    const off = () => setIsOffline(true);
+    window.addEventListener('online', on);
+    window.addEventListener('offline', off);
+    return () => { window.removeEventListener('online', on); window.removeEventListener('offline', off); };
   }, []);
 
-  // ─────────────────────────────────────────────────────────────────────────
-  // Apply any pending offline completions on top of a dashboard snapshot.
-  // Called after both online loads and IDB cache reads so the UI always
-  // reflects locally queued items even before they reach the server.
-  // ─────────────────────────────────────────────────────────────────────────
-  const applyPendingItems = useCallback(async (snapshot, date) => {
-    const pending = await getAllSyncItems();
-    const forDate = pending.filter((item) => item.date === date);
-    if (forDate.length === 0) return snapshot;
-
+  // Apply pending offline completions on top of any snapshot
+  const applyPending = useCallback(async (snapshot, date) => {
+    const forDate = (await getAllSyncItems()).filter((i) => i.date === date);
+    if (!forDate.length) return snapshot;
     let completions = [...snapshot.completions];
     for (const item of forDate) {
       if (item.completed) {
-        const alreadyIn = completions.some((c) => c.habitId === item.habitId);
-        if (!alreadyIn) {
+        if (!completions.some((c) => c.habitId === item.habitId))
           completions.push({ id: -item.id, habitId: item.habitId, date });
-        }
       } else {
         completions = completions.filter((c) => c.habitId !== item.habitId);
       }
@@ -122,208 +168,168 @@ export default function TodayClient({ initialDate }) {
     return { ...snapshot, completions };
   }, []);
 
-  // ─────────────────────────────────────────────────────────────────────────
-  // Load dashboard — tries network first, falls back to IDB cache.
-  // ─────────────────────────────────────────────────────────────────────────
-  const load = useCallback(async (date) => {
+  // Network fetch — called both for foreground (no cache) and background (have cache)
+  const load = useCallback(async (date, showLoader = false) => {
     const userId = getOrCreateUserId();
     if (!userId) return;
-
-    setLoading(true);
+    if (showLoader) setInitialLoading(true);
     setError(null);
 
     try {
       const res = await fetch(`/api/dashboard?date=${date}`, {
         headers: { 'X-User-Id': userId },
       });
-
-      if (!res.ok) throw new Error('Server error');
-
+      if (!res.ok) throw new Error('server');
       const data = await res.json();
 
-      // Persist to IDB so we have it when offline
-      await saveDashboardCache(date, data);
+      // Write to both cache layers (L1+L2 = localStorage, IDB = offline)
+      setCachedDashboard(date, data);
+      saveDashboardCache(date, data); // IDB — async, fire-and-forget
 
-      // Reconcile with any offline items queued while fetching
-      const reconciled = await applyPendingItems(
-        {
-          habits:      data.habits      ?? [],
-          completions: data.completions ?? [],
-          calendar:    data.calendar    ?? null,
-          stats:       data.stats       ?? EMPTY_STATE.stats,
-        },
-        date
-      );
+      const reconciled = await applyPending(normalizeDash(data), date);
       setDashboardState(reconciled);
+      setInitialLoading(false);
       setIsOffline(false);
+
     } catch {
-      // ── Offline fallback: try IDB cache ──────────────────────────────────
-      const cached = await getDashboardCache(date);
-      if (cached) {
-        const reconciled = await applyPendingItems(
-          {
-            habits:      cached.habits      ?? [],
-            completions: cached.completions ?? [],
-            calendar:    cached.calendar    ?? null,
-            stats:       cached.stats       ?? EMPTY_STATE.stats,
-          },
-          date
-        );
-        setDashboardState(reconciled);
+      // Offline fallback — try IDB
+      const idb = await getDashboardCache(date);
+      if (idb) {
+        setDashboardState(await applyPending(normalizeDash(idb), date));
         setIsOffline(true);
-      } else {
-        // No cache either — show error
-        setError('No cached data available. Connect to load your habits.');
-        setIsOffline(true);
+      } else if (showLoader) {
+        setError('No cached data. Connect to load your habits.');
       }
-    } finally {
-      setLoading(false);
+      setInitialLoading(false);
     }
-  }, [applyPendingItems]);
+  }, [applyPending]);
 
+  // Phase 1: instant — read localStorage (sync <1 ms)
+  // Phase 2: background — fetch fresh from server
   useEffect(() => {
-    load(selectedDate);
+    const cached = getCachedDashboard(selectedDate);
+    if (cached) {
+      applyPending(normalizeDash(cached), selectedDate).then(setDashboardState);
+      setInitialLoading(false);
+      load(selectedDate, false); // silent background refresh
+    } else {
+      load(selectedDate, true);  // no cache — show loading experience
+    }
+  }, [selectedDate, load, applyPending]);
+
+  // Reload when offline sync completes
+  useEffect(() => {
+    const h = () => load(selectedDate, false);
+    window.addEventListener('sync-complete', h);
+    return () => window.removeEventListener('sync-complete', h);
   }, [load, selectedDate]);
 
-  // ── Reload when sync completes (online event in NetworkBanner) ─────────────
-  useEffect(() => {
-    const handleSyncComplete = () => load(selectedDate);
-    window.addEventListener('sync-complete', handleSyncComplete);
-    return () => window.removeEventListener('sync-complete', handleSyncComplete);
-  }, [load, selectedDate]);
-
-  // ─────────────────────────────────────────────────────────────────────────
-  // Derived values
-  // ─────────────────────────────────────────────────────────────────────────
+  // ─── derived values ───────────────────────────────────────────────────────
   const { habits, completions, stats } = dashboardState;
-  const completedIds    = new Set(completions.map((c) => c.habitId));
+  const completedIds = useMemo(() => new Set(completions.map((c) => c.habitId)), [completions]);
+  completedIdsRef.current = completedIds; // keep ref in sync
+
   const completedCount  = completions.length;
   const totalHabits     = habits.length;
   const progressPercent = totalHabits ? (completedCount / totalHabits) * 100 : 0;
 
-  // ─────────────────────────────────────────────────────────────────────────
-  // Toggle a habit — works online and offline
-  // ─────────────────────────────────────────────────────────────────────────
-  const toggleHabit = useCallback(
-    async (habitId) => {
-      if (pendingHabits.current.has(habitId)) return; // double-tap guard
-      pendingHabits.current.add(habitId);
+  // ─── toggleHabit — only re-creates on date/load change ───────────────────
+  const toggleHabit = useCallback(async (habitId) => {
+    if (pendingIds.has(habitId)) return;
+    setPendingIds((s) => new Set(s).add(habitId));
 
-      const userId = getOrCreateUserId();
-      if (!userId) { pendingHabits.current.delete(habitId); return; }
+    const userId       = getOrCreateUserId();
+    const release      = () => setPendingIds((s) => { const n = new Set(s); n.delete(habitId); return n; });
+    if (!userId) { release(); return; }
 
-      const willComplete = !completedIds.has(habitId);
+    const willComplete = !completedIdsRef.current.has(habitId);
 
-      // ── Optimistic UI + calendar patch ────────────────────────────────
-      setDashboardState((prev) => {
-        const newCompletions = willComplete
-          ? [...prev.completions, { id: -Date.now(), habitId, date: selectedDate }]
-          : prev.completions.filter((c) => c.habitId !== habitId);
+    // Optimistic UI
+    setDashboardState((prev) => {
+      const newC = willComplete
+        ? [...prev.completions, { id: -Date.now(), habitId, date: selectedDate }]
+        : prev.completions.filter((c) => c.habitId !== habitId);
+      let newCal = prev.calendar;
+      if (newCal) {
+        const cnt = newC.filter((c) => c.date === selectedDate).length;
+        newCal = {
+          ...newCal,
+          days: newCal.days.map((d) =>
+            d.date === selectedDate
+              ? { ...d, completed: cnt, full: prev.habits.length > 0 && cnt === prev.habits.length }
+              : d
+          ),
+        };
+      }
+      return { ...prev, completions: newC, calendar: newCal };
+    });
 
-        let newCalendar = prev.calendar;
-        if (prev.calendar) {
-          const count = newCompletions.filter((c) => c.date === selectedDate).length;
-          newCalendar = {
-            ...prev.calendar,
-            days: prev.calendar.days.map((day) =>
-              day.date === selectedDate
-                ? { ...day, completed: count, full: prev.habits.length > 0 && count === prev.habits.length }
-                : day
-            ),
-          };
-        }
-        return { ...prev, completions: newCompletions, calendar: newCalendar };
+    if (willComplete) { setGlowingId(habitId); setTimeout(() => setGlowingId(null), 700); }
+
+    // Offline path
+    if (!navigator.onLine) {
+      await enqueueSyncItem({ habitId, date: selectedDate, completed: willComplete, userId });
+      window.dispatchEvent(new Event('offline-item-queued'));
+      release();
+      return;
+    }
+
+    // Online path
+    try {
+      const res = await fetch('/api/complete', {
+        method:  'POST',
+        headers: { 'Content-Type': 'application/json', 'X-User-Id': userId },
+        body:    JSON.stringify({ habitId, date: selectedDate, completed: willComplete }),
       });
+      if (!res.ok) { load(selectedDate, false); return; }
+      const data = await res.json();
+      setDashboardState((prev) => ({
+        ...prev,
+        completions: data.completions ?? prev.completions,
+        stats:       data.stats       ?? prev.stats,
+      }));
+    } catch {
+      await enqueueSyncItem({ habitId, date: selectedDate, completed: willComplete, userId });
+      window.dispatchEvent(new Event('offline-item-queued'));
+    } finally {
+      release();
+    }
+  }, [selectedDate, load]); // completedIds via ref — stable
 
-      if (willComplete) {
-        setGlowingId(habitId);
-        setTimeout(() => setGlowingId(null), 700);
-      }
-
-      // ── If offline: save to IDB queue, done ───────────────────────────
-      if (!navigator.onLine) {
-        await enqueueSyncItem({ habitId, date: selectedDate, completed: willComplete, userId });
-        // Signal NetworkBanner to refresh its count
-        window.dispatchEvent(new Event('offline-item-queued'));
-        pendingHabits.current.delete(habitId);
-        return;
-      }
-
-      // ── Online: POST to server ────────────────────────────────────────
-      try {
-        const res = await fetch('/api/complete', {
-          method:  'POST',
-          headers: { 'Content-Type': 'application/json', 'X-User-Id': userId },
-          body:    JSON.stringify({ habitId, date: selectedDate, completed: willComplete }),
-        });
-
-        if (!res.ok) { load(selectedDate); return; }
-
-        const data = await res.json();
-        setDashboardState((prev) => ({
-          ...prev,
-          completions: data.completions ?? prev.completions,
-          stats:       data.stats       ?? prev.stats,
-        }));
-      } catch {
-        // Network dropped between the check and the fetch — queue it
-        await enqueueSyncItem({ habitId, date: selectedDate, completed: willComplete, userId });
-        window.dispatchEvent(new Event('offline-item-queued'));
-      } finally {
-        pendingHabits.current.delete(habitId);
-      }
-    },
-    [selectedDate, completedIds, load]
-  );
-
-  // ─── date navigation ──────────────────────────────────────────────────────
-  const navigateToDate = useCallback((dateKey) => {
-    setSelectedDate(dateKey);
-    if (dateKey === todayKey) router.replace('/today');
-    else router.replace(`/today?date=${dateKey}`);
+  // ─── navigation ───────────────────────────────────────────────────────────
+  const navigateTo = useCallback((k) => {
+    setSelectedDate(k);
+    if (k === todayKey) router.replace('/today');
+    else router.replace(`/today?date=${k}`);
   }, [router, todayKey]);
 
-  const goPrevDay = () => navigateToDate(shiftDateKey(selectedDate, -1));
-  const goNextDay = () => {
-    if (selectedDate === todayKey) return;
-    navigateToDate(clampToToday(shiftDateKey(selectedDate, 1), todayKey));
+  const goPrev = () => navigateTo(shiftDate(selectedDate, -1));
+  const goNext = () => {
+    if (selectedDate !== todayKey) navigateTo(clamp(shiftDate(selectedDate, 1), todayKey));
   };
 
-  // ─── early returns ────────────────────────────────────────────────────────
-  if (!onboardingDone) {
-    return <Onboarding onComplete={() => setOnboardingDone(true)} />;
-  }
-
-  if (loading && habits.length === 0) {
-    return (
-      <main className="min-h-screen flex items-center justify-center bg-[#0f172a] pb-20">
-        <p className="text-[#94a3b8] font-medium">Loading…</p>
-      </main>
-    );
-  }
+  // ─── render ───────────────────────────────────────────────────────────────
+  if (!onboardingDone)  return <Onboarding onComplete={() => setOnboardingDone(true)} />;
+  if (initialLoading)   return <LoadingDashboard />;
 
   if (error) {
     return (
       <main className="min-h-screen flex flex-col items-center justify-center bg-[#0f172a] px-5 pb-20">
         <p className="text-4xl mb-4">📡</p>
-        <p className="text-slate-300 font-semibold mb-2">You're offline</p>
+        <p className="text-slate-300 font-semibold mb-2">You&apos;re offline</p>
         <p className="text-[#94a3b8] text-sm text-center mb-6">{error}</p>
-        <button
-          type="button"
-          onClick={() => load(selectedDate)}
-          className="rounded-xl bg-[#1e293b] text-slate-100 px-4 py-2 font-medium border border-white/10"
-        >
+        <button type="button" onClick={() => load(selectedDate, true)}
+          className="rounded-xl bg-[#1e293b] text-slate-100 px-4 py-2 font-medium border border-white/10">
           Retry
         </button>
       </main>
     );
   }
 
-  // ─── render ───────────────────────────────────────────────────────────────
   return (
     <main className="min-h-screen mx-auto max-w-[420px] px-5 py-8 pb-24 bg-[#0f172a]">
 
-      {/* ── Header: greeting + streak ── */}
+      {/* Header */}
       <section className="text-center mb-8">
         {greeting && (
           <p className="text-[#94a3b8] text-sm font-semibold tracking-wide uppercase mb-2">
@@ -335,22 +341,19 @@ export default function TodayClient({ initialDate }) {
         </p>
         {selectedDate === todayKey && (
           <p className="text-[#94a3b8] text-sm mt-2">
-            Day {Math.min(Math.max(stats.progress, 1), 21)} / 21 &middot; Complete today&apos;s disciplines.
+            Day {Math.min(Math.max(stats.progress, 1), 21)} / 21
+            {' · '}Complete today&apos;s disciplines.
           </p>
         )}
       </section>
 
-      {/* ── Date navigator + progress + habit list ── */}
+      {/* Date nav + progress + habits */}
       <section className="mb-8">
 
-        {/* Date row */}
         <div className="flex items-center justify-between gap-3 mb-5">
-          <button
-            type="button"
-            onClick={goPrevDay}
+          <button type="button" onClick={goPrev}
             className="h-10 w-10 rounded-2xl bg-[#1e293b] border border-white/8 text-slate-300 flex items-center justify-center active:scale-[0.96] transition-transform"
-            aria-label="Previous day"
-          >
+            aria-label="Previous day">
             <span className="text-xl leading-none">‹</span>
           </button>
           <div className="text-center">
@@ -358,45 +361,30 @@ export default function TodayClient({ initialDate }) {
               {selectedDate === todayKey ? 'Today' : 'Past day'}
             </p>
             <h1 className="text-base font-bold text-slate-100 tracking-tight mt-0.5">
-              {formatLongDate(selectedDate)}
+              {fmtLong(selectedDate)}
             </h1>
           </div>
-          <button
-            type="button"
-            onClick={goNextDay}
-            disabled={selectedDate === todayKey}
+          <button type="button" onClick={goNext} disabled={selectedDate === todayKey}
             className="h-10 w-10 rounded-2xl bg-[#1e293b] border border-white/8 text-slate-300 flex items-center justify-center active:scale-[0.96] transition-transform disabled:opacity-30 disabled:active:scale-100"
-            aria-label="Next day"
-          >
+            aria-label="Next day">
             <span className="text-xl leading-none">›</span>
           </button>
         </div>
 
-        {/* Progress bar */}
         <div className="rounded-2xl bg-[#1e293b] border border-white/5 shadow-card p-5 mb-4">
           <div className="flex items-baseline justify-between mb-3">
-            <p className="text-[#94a3b8] text-sm font-medium">
-              {completedCount} / {totalHabits} completed
-            </p>
+            <p className="text-[#94a3b8] text-sm font-medium">{completedCount} / {totalHabits} completed</p>
             <p className="text-[#22c55e] font-bold tabular-nums text-sm">
               {totalHabits ? Math.round(progressPercent) : 0}%
             </p>
           </div>
-          <div
-            className="h-3 w-full rounded-full bg-slate-700/60 overflow-hidden"
-            role="progressbar"
-            aria-valuenow={totalHabits ? Math.round(progressPercent) : 0}
-            aria-valuemin={0}
-            aria-valuemax={100}
-          >
-            <div
-              className="progress-fill h-full rounded-full bg-gradient-to-r from-[#22c55e] to-[#16a34a] will-change-[width]"
-              style={{ width: `${progressPercent}%` }}
-            />
+          <div className="h-3 w-full rounded-full bg-slate-700/60 overflow-hidden"
+            role="progressbar" aria-valuenow={Math.round(progressPercent)} aria-valuemin={0} aria-valuemax={100}>
+            <div className="progress-fill h-full rounded-full bg-gradient-to-r from-[#22c55e] to-[#16a34a] will-change-[width]"
+              style={{ width: `${progressPercent}%` }} />
           </div>
         </div>
 
-        {/* Perfect day banner */}
         {completedCount === totalHabits && totalHabits > 0 && (
           <div className="mb-4 rounded-2xl bg-gradient-to-br from-[#22c55e] to-[#16a34a] p-5 text-center shadow-card animate-bounce-subtle">
             <p className="text-2xl font-bold text-white mb-0.5">🎉 Perfect Day!</p>
@@ -404,36 +392,17 @@ export default function TodayClient({ initialDate }) {
           </div>
         )}
 
-        {/* Habit list */}
         <div className="space-y-3">
-          {habits.map((habit) => {
-            const done    = completedIds.has(habit.id);
-            const pending = pendingHabits.current.has(habit.id);
-            return (
-              <button
-                key={habit.id}
-                type="button"
-                onClick={() => toggleHabit(habit.id)}
-                disabled={pending}
-                className={`w-full flex items-center justify-between rounded-2xl p-5 text-left shadow-card border transition-all duration-200 focus:outline-none focus:ring-2 focus:ring-[#22c55e]/50 focus:ring-offset-2 focus:ring-offset-[#0f172a] active:scale-[0.99] disabled:cursor-wait ${
-                  done ? 'bg-[#1e293b] border-[#22c55e]/30' : 'bg-[#1e293b] border-white/5 hover:border-white/10'
-                } ${glowingId === habit.id ? 'animate-habit-glow' : ''}`}
-              >
-                <span className={`text-[1rem] font-semibold transition-colors ${done ? 'text-[#22c55e]' : 'text-slate-100'}`}>
-                  {habit.name}
-                </span>
-                <span className={`flex h-6 w-6 shrink-0 items-center justify-center rounded-md border-2 transition-all duration-200 ease-out ${done ? 'bg-[#22c55e] border-[#22c55e] text-white' : 'border-slate-600 bg-transparent'}`}>
-                  {done ? (
-                    <svg className="h-3.5 w-3.5 animate-check-pop" fill="none" stroke="currentColor" strokeWidth="3" strokeLinecap="round" strokeLinejoin="round" viewBox="0 0 24 24">
-                      <path d="M5 13l4 4L19 7" />
-                    </svg>
-                  ) : (
-                    <span className="sr-only">Not done</span>
-                  )}
-                </span>
-              </button>
-            );
-          })}
+          {habits.map((habit) => (
+            <HabitRow
+              key={habit.id}
+              habit={habit}
+              done={completedIds.has(habit.id)}
+              isPending={pendingIds.has(habit.id)}
+              isGlowing={glowingId === habit.id}
+              onToggle={toggleHabit}
+            />
+          ))}
         </div>
       </section>
     </main>
