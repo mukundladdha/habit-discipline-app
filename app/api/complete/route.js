@@ -45,12 +45,12 @@ export async function POST(request) {
   }
 
   try {
-    // ── Step 1: authorise — habit must belong to this user ───────────────────
+    // ── Step 1: authorise — habit must belong to this user and be active ──────
     const user = await getOrCreateUser(userId);
-    if (!user.habits.some((h) => h.id === habitId)) {
+    if (!user.habits.some((h) => h.id === habitId && h.isActive !== false)) {
       return NextResponse.json({ error: 'Habit not found' }, { status: 404 });
     }
-    const habitCount = user.habits.length;
+    const habitCount = user.habits.filter((h) => h.isActive !== false).length;
 
     // ── Step 2: write the completion (upsert keeps it idempotent) ────────────
     if (completed) {

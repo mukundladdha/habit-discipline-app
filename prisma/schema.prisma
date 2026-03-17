@@ -17,16 +17,18 @@ model User {
   completions Completion[]
 }
 
-// Each user gets their own copy of the 4 default habits.
+// Each user owns their own habits selected during onboarding (or added later).
 model Habit {
   id          Int          @id @default(autoincrement())
   userId      String
   user        User         @relation(fields: [userId], references: [id], onDelete: Cascade)
   name        String
   sortOrder   Int          @default(0)
+  isActive    Boolean      @default(true)
   completions Completion[]
 
   @@index([userId])
+  @@index([userId, isActive])
 }
 
 // userId is denormalised here so every query can filter by userId

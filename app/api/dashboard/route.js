@@ -76,25 +76,25 @@ export async function GET(request) {
     // ── 2. Three reads in ONE transaction — single DB round-trip ─────────────
     const [completionsForDate, historyGroups, perHabitGroups] = await prisma.$transaction([
 
-      // 2a. Completions for the requested date (lean payload, no JOIN)
+      // 2a. Completions for the requested date — only for active habits
       prisma.completion.findMany({
-        where:   { userId, date },
+        where:   { userId, date, habit: { isActive: true } },
         select:  { id: true, habitId: true, date: true },
         orderBy: { habitId: 'asc' },
       }),
 
-      // 2b. Per-day counts for streak + calendar + overall stats
+      // 2b. Per-day counts for streak + calendar + overall stats (active habits only)
       prisma.completion.groupBy({
         by:      ['date'],
-        where:   { userId, date: { gte: lookbackStr } },
+        where:   { userId, date: { gte: lookbackStr }, habit: { isActive: true } },
         _count:  { date: true },
         orderBy: { date: 'asc' },
       }),
 
-      // 2c. Per-habit counts — used for the Stats page breakdown
+      // 2c. Per-habit counts — used for the Stats page breakdown (active habits only)
       prisma.completion.groupBy({
         by:     ['habitId'],
-        where:  { userId, date: { gte: lookbackStr } },
+        where:  { userId, date: { gte: lookbackStr }, habit: { isActive: true } },
         _count: { habitId: true },
       }),
     ]);

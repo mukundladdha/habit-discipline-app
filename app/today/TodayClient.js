@@ -26,8 +26,9 @@ import { memo, useState, useEffect, useCallback, useRef, useMemo } from 'react';
 import { useRouter } from 'next/navigation';
 import Onboarding from '../../components/Onboarding';
 import LoadingDashboard from '../../components/LoadingDashboard';
+import SettingsPanel from '../../components/SettingsPanel';
 import { getOrCreateUserId } from '../../lib/client-user';
-import { getCachedDashboard, setCachedDashboard } from '../../lib/dashboard-cache';
+import { getCachedDashboard, setCachedDashboard, clearCachedDashboard } from '../../lib/dashboard-cache';
 import {
   enqueueSyncItem,
   saveDashboardCache,
@@ -131,6 +132,7 @@ export default function TodayClient({ initialDate }) {
   const [glowingId, setGlowingId]           = useState(null);
   const [isOffline, setIsOffline]           = useState(false);
   const [pendingIds, setPendingIds]         = useState(new Set()); // STATE not ref
+  const [showSettings, setShowSettings]     = useState(false);
 
   // Stable ref mirror for completedIds so toggleHabit doesn't recreate on every completion
   const completedIdsRef = useRef(new Set());
@@ -296,6 +298,14 @@ export default function TodayClient({ initialDate }) {
     }
   }, [selectedDate, load]); // completedIds via ref — stable
 
+  // ─── settings / habit changes ─────────────────────────────────────────────
+  const handleHabitsChanged = useCallback(() => {
+    // Bust cache for today so next load fetches fresh active habits from server
+    clearCachedDashboard(selectedDate);
+    setShowSettings(false);
+    load(selectedDate, false); // silent background reload
+  }, [selectedDate, load]);
+
   // ─── navigation ───────────────────────────────────────────────────────────
   const navigateTo = useCallback((k) => {
     setSelectedDate(k);
@@ -329,8 +339,30 @@ export default function TodayClient({ initialDate }) {
   return (
     <main className="min-h-screen mx-auto max-w-[420px] px-5 py-8 pb-24 bg-[#0f172a]">
 
+      {/* Settings panel */}
+      {showSettings && (
+        <SettingsPanel
+          onClose={() => setShowSettings(false)}
+          onHabitsChanged={handleHabitsChanged}
+        />
+      )}
+
       {/* Header */}
-      <section className="text-center mb-8">
+      <section className="relative text-center mb-8">
+        {/* Gear icon — absolute top-right of header */}
+        <button
+          type="button"
+          onClick={() => setShowSettings(true)}
+          aria-label="Settings"
+          className="absolute right-0 top-0 h-9 w-9 rounded-xl bg-[#1e293b] border border-white/8 flex items-center justify-center text-[#94a3b8] active:scale-90 transition-transform hover:text-slate-200"
+        >
+          <svg xmlns="http://www.w3.org/2000/svg" className="h-4.5 w-4.5" viewBox="0 0 24 24"
+            fill="none" stroke="currentColor" strokeWidth="2" strokeLinecap="round" strokeLinejoin="round">
+            <circle cx="12" cy="12" r="3" />
+            <path d="M19.4 15a1.65 1.65 0 0 0 .33 1.82l.06.06a2 2 0 0 1-2.83 2.83l-.06-.06a1.65 1.65 0 0 0-1.82-.33 1.65 1.65 0 0 0-1 1.51V21a2 2 0 0 1-4 0v-.09A1.65 1.65 0 0 0 9 19.4a1.65 1.65 0 0 0-1.82.33l-.06.06a2 2 0 0 1-2.83-2.83l.06-.06A1.65 1.65 0 0 0 4.68 15a1.65 1.65 0 0 0-1.51-1H3a2 2 0 0 1 0-4h.09A1.65 1.65 0 0 0 4.6 9a1.65 1.65 0 0 0-.33-1.82l-.06-.06a2 2 0 0 1 2.83-2.83l.06.06A1.65 1.65 0 0 0 9 4.68a1.65 1.65 0 0 0 1-1.51V3a2 2 0 0 1 4 0v.09a1.65 1.65 0 0 0 1 1.51 1.65 1.65 0 0 0 1.82-.33l.06-.06a2 2 0 0 1 2.83 2.83l-.06.06A1.65 1.65 0 0 0 19.4 9a1.65 1.65 0 0 0 1.51 1H21a2 2 0 0 1 0 4h-.09a1.65 1.65 0 0 0-1.51 1z" />
+          </svg>
+        </button>
+
         {greeting && (
           <p className="text-[#94a3b8] text-sm font-semibold tracking-wide uppercase mb-2">
             {greeting}
