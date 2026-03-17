@@ -32,8 +32,8 @@ export default function Onboarding({ onComplete }: Props) {
   const touchStartX         = useRef(0);
 
   const advance = () => {
-    if (screen < 1) setScreen((s) => s + 1);
-    // Screen 2 (HabitSelection) handles its own completion via onComplete prop
+    if (screen < 2) setScreen((s) => s + 1);
+    // Screen 2 (HabitSelection) manages its own CTA; the shared button is hidden there
   };
 
   const buttonLabel = screen === 0 ? 'Start My 21-Day Streak' : "Let's Start";
