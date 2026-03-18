@@ -1,42 +1,41 @@
 'use client';
 
 /**
- * TodayClient.js — Performance-optimized Today view.
+ * TodayClient.js — Local-first Today view.
  *
- * 1. INSTANT STARTUP — localStorage cache read in a one-shot useEffect fires
- *    before the first paint cycle; returning users see real data with no
- *    loading screen.
+ * LOAD FLOW
+ *   1. Read localStorage cache synchronously on mount → render real UI instantly
+ *   2. Fetch /api/dashboard in the background → merge + update UI silently
+ *   3. If fetch fails → keep showing cached data; no error screen for returning users
  *
- * 2. BACKGROUND REFRESH — network fetch runs silently after showing cached
- *    data; UI updates without any spinner or flash.
+ * COMPLETION FLOW
+ *   1. Update UI optimistically (zero wait)
+ *   2. Write to localStorage queue (synchronous, survives offline)
+ *   3. If online: send /api/complete immediately; dequeue on success
+ *   4. If offline: item stays queued; NetworkBanner shows pending count
+ *   5. On reconnect: useNetwork hook flushes queue → dispatches 'sync-complete'
+ *      → TodayClient reloads fresh data silently
  *
- * 3. MEMOIZED HabitRow — React.memo + custom comparator; only the toggled
- *    row re-renders, the other N-1 rows are skipped.
- *
- * 4. STABLE toggleHabit — completedIds mirrored into a ref so the callback
- *    only recreates when selectedDate or load changes, not on every toggle.
- *
- * 5. pendingIds AS STATE (not ref) — the disabled prop on habit buttons now
- *    actually triggers a re-render, fixing the broken double-tap guard.
- *
- * 6. LoadingDashboard — animated skeleton for new users (no plain "Loading…").
+ * PERFORMANCE
+ *   • applyLocalPending is synchronous (localStorage read, not IDB)
+ *   • optimisticToggle is a pure function — no async, no state diffing
+ *   • HabitRow memo + custom comparator — O(1) re-renders per toggle
+ *   • load() useCallback has [] deps — never recreated across renders
+ *   • No IDB imports anywhere in this file
  */
 
 import { memo, useState, useEffect, useCallback, useRef, useMemo } from 'react';
 import { useRouter } from 'next/navigation';
-import Onboarding from '../../components/Onboarding';
+import Onboarding      from '../../components/Onboarding';
 import LoadingDashboard from '../../components/LoadingDashboard';
-import SettingsPanel from '../../components/SettingsPanel';
+import SettingsPanel   from '../../components/SettingsPanel';
 import { getOrCreateUserId } from '../../lib/client-user';
-import { getCachedDashboard, setCachedDashboard, clearCachedDashboard } from '../../lib/dashboard-cache';
 import {
-  enqueueSyncItem,
-  saveDashboardCache,
-  getDashboardCache,
-  getAllSyncItems,
-} from '../../lib/idb';
+  getCache, setCache, clearCache,
+  getQueueForDate, enqueue, dequeue,
+} from '../../lib/local-store';
 
-// ─── date helpers ─────────────────────────────────────────────────────────────
+// ── Date helpers ───────────────────────────────────────────────────────────────
 
 function getTodayKey()       { return new Date().toISOString().slice(0, 10); }
 function isValidDate(k)      { return typeof k === 'string' && /^\d{4}-\d{2}-\d{2}$/.test(k); }
@@ -52,7 +51,7 @@ function fmtLong(k) {
   });
 }
 
-// ─── constants ────────────────────────────────────────────────────────────────
+// ── Module-level pure helpers (no component closure) ──────────────────────────
 
 const EMPTY_STATE = {
   habits:      [],
@@ -70,7 +69,51 @@ function normalizeDash(d) {
   };
 }
 
-// ─── memoized habit row ───────────────────────────────────────────────────────
+/**
+ * Overlay pending localStorage queue items on top of a dashboard snapshot.
+ * Pure + synchronous — safe to call on every render path.
+ */
+function applyLocalPending(snapshot, date) {
+  const pending = getQueueForDate(date); // sync localStorage read
+  if (!pending.length) return snapshot;
+
+  let completions = [...snapshot.completions];
+  for (const item of pending) {
+    if (item.completed) {
+      if (!completions.some(c => c.habitId === item.habitId))
+        completions.push({ id: -Date.now(), habitId: item.habitId, date });
+    } else {
+      completions = completions.filter(c => c.habitId !== item.habitId);
+    }
+  }
+  return { ...snapshot, completions };
+}
+
+/**
+ * Apply one optimistic toggle to a state snapshot.
+ * Pure function — returns a new object, never mutates.
+ */
+function optimisticToggle(prev, habitId, date, willComplete) {
+  const newC = willComplete
+    ? [...prev.completions, { id: -Date.now(), habitId, date }]
+    : prev.completions.filter(c => c.habitId !== habitId);
+
+  let newCal = prev.calendar;
+  if (newCal) {
+    const cnt = newC.filter(c => c.date === date).length;
+    newCal = {
+      ...newCal,
+      days: newCal.days.map(d =>
+        d.date === date
+          ? { ...d, completed: cnt, full: prev.habits.length > 0 && cnt === prev.habits.length }
+          : d
+      ),
+    };
+  }
+  return { ...prev, completions: newC, calendar: newCal };
+}
+
+// ── Memoized HabitRow — only re-renders the toggled row ───────────────────────
 
 const HabitRow = memo(function HabitRow({ habit, done, isPending, isGlowing, onToggle }) {
   return (
@@ -80,7 +123,7 @@ const HabitRow = memo(function HabitRow({ habit, done, isPending, isGlowing, onT
       disabled={isPending}
       className={[
         'w-full flex items-center justify-between rounded-2xl p-5 text-left',
-        'shadow-card border transition-all duration-200',
+        'shadow-card border transition-[border-color,background-color] duration-150',
         'focus:outline-none focus:ring-2 focus:ring-[#22c55e]/50',
         'focus:ring-offset-2 focus:ring-offset-[#0f172a]',
         'active:scale-[0.99] disabled:cursor-wait',
@@ -88,12 +131,12 @@ const HabitRow = memo(function HabitRow({ habit, done, isPending, isGlowing, onT
         isGlowing ? 'animate-habit-glow' : '',
       ].join(' ')}
     >
-      <span className={`text-[1rem] font-semibold transition-colors ${done ? 'text-[#22c55e]' : 'text-slate-100'}`}>
+      <span className={`text-[1rem] font-semibold transition-colors duration-150 ${done ? 'text-[#22c55e]' : 'text-slate-100'}`}>
         {habit.name}
       </span>
       <span className={[
         'flex h-6 w-6 shrink-0 items-center justify-center rounded-md border-2',
-        'transition-all duration-200 ease-out',
+        'transition-[border-color,background-color] duration-150',
         done ? 'bg-[#22c55e] border-[#22c55e] text-white' : 'border-slate-600 bg-transparent',
       ].join(' ')}>
         {done ? (
@@ -112,65 +155,39 @@ const HabitRow = memo(function HabitRow({ habit, done, isPending, isGlowing, onT
   p.habit.id  === n.habit.id
 );
 
-// ─── component ────────────────────────────────────────────────────────────────
+// ── Component ──────────────────────────────────────────────────────────────────
 
 export default function TodayClient({ initialDate }) {
   const router   = useRouter();
   const todayKey = useMemo(() => getTodayKey(), []);
   const initDate = useMemo(() => clamp(initialDate || todayKey, todayKey), [initialDate, todayKey]);
 
-  // Onboarding — SSR-safe (start true to match server, set via effect)
+  // Onboarding — SSR-safe (default true to match server; effect sets real value)
   const [onboardingDone, setOnboardingDone] = useState(true);
   useEffect(() => { setOnboardingDone(!!localStorage.getItem('onboardingComplete')); }, []);
 
-  // Core state
   const [selectedDate, setSelectedDate]     = useState(initDate);
   const [dashboardState, setDashboardState] = useState(EMPTY_STATE);
   const [initialLoading, setInitialLoading] = useState(true);
   const [error, setError]                   = useState(null);
   const [greeting, setGreeting]             = useState('');
   const [glowingId, setGlowingId]           = useState(null);
-  const [isOffline, setIsOffline]           = useState(false);
-  const [pendingIds, setPendingIds]         = useState(new Set()); // STATE not ref
+  const [pendingIds, setPendingIds]         = useState(new Set());
   const [showSettings, setShowSettings]     = useState(false);
 
-  // Stable ref mirror for completedIds so toggleHabit doesn't recreate on every completion
+  // Stable ref so toggleHabit never closes over stale completedIds
   const completedIdsRef = useRef(new Set());
 
   useEffect(() => { setSelectedDate(initDate); }, [initDate]);
 
   useEffect(() => {
-    const g = ['Howdy!', 'Hola!', "Let's win today.", 'Stay disciplined.',
+    const msgs = ['Howdy!', 'Hola!', "Let's win today.", 'Stay disciplined.',
       'One step at a time.', 'Make today count.', 'Show up. Every day.', 'Build the habit.'];
-    setGreeting(g[Math.floor(Math.random() * g.length)]);
+    setGreeting(msgs[Math.floor(Math.random() * msgs.length)]);
   }, []);
 
-  useEffect(() => {
-    setIsOffline(!navigator.onLine);
-    const on  = () => setIsOffline(false);
-    const off = () => setIsOffline(true);
-    window.addEventListener('online', on);
-    window.addEventListener('offline', off);
-    return () => { window.removeEventListener('online', on); window.removeEventListener('offline', off); };
-  }, []);
-
-  // Apply pending offline completions on top of any snapshot
-  const applyPending = useCallback(async (snapshot, date) => {
-    const forDate = (await getAllSyncItems()).filter((i) => i.date === date);
-    if (!forDate.length) return snapshot;
-    let completions = [...snapshot.completions];
-    for (const item of forDate) {
-      if (item.completed) {
-        if (!completions.some((c) => c.habitId === item.habitId))
-          completions.push({ id: -item.id, habitId: item.habitId, date });
-      } else {
-        completions = completions.filter((c) => c.habitId !== item.habitId);
-      }
-    }
-    return { ...snapshot, completions };
-  }, []);
-
-  // Network fetch — called both for foreground (no cache) and background (have cache)
+  // ── Load dashboard ─────────────────────────────────────────────────────────
+  // Deps: [] — uses only module-level helpers, never recreated across renders.
   const load = useCallback(async (date, showLoader = false) => {
     const userId = getOrCreateUserId();
     if (!userId) return;
@@ -184,134 +201,113 @@ export default function TodayClient({ initialDate }) {
       if (!res.ok) throw new Error('server');
       const data = await res.json();
 
-      // Write to both cache layers (L1+L2 = localStorage, IDB = offline)
-      setCachedDashboard(date, data);
-      saveDashboardCache(date, data); // IDB — async, fire-and-forget
-
-      const reconciled = await applyPending(normalizeDash(data), date);
-      setDashboardState(reconciled);
+      // L1 write is synchronous; L2 (localStorage) write is debounced + rIC
+      setCache(date, data);
+      setDashboardState(applyLocalPending(normalizeDash(data), date));
       setInitialLoading(false);
-      setIsOffline(false);
 
     } catch {
-      // Offline fallback — try IDB
-      const idb = await getDashboardCache(date);
-      if (idb) {
-        setDashboardState(await applyPending(normalizeDash(idb), date));
-        setIsOffline(true);
+      // Offline or server error — fall back to whatever cache we have
+      const cached = getCache(date);
+      if (cached) {
+        setDashboardState(applyLocalPending(normalizeDash(cached), date));
+        setInitialLoading(false);
       } else if (showLoader) {
         setError('No cached data. Connect to load your habits.');
+        setInitialLoading(false);
       }
-      setInitialLoading(false);
     }
-  }, [applyPending]);
+  }, []); // stable — module-level helpers only
 
-  // Phase 1: instant — read localStorage (sync <1 ms)
-  // Phase 2: background — fetch fresh from server
+  // ── Startup: instant cache render → silent background refresh ──────────────
   useEffect(() => {
-    const cached = getCachedDashboard(selectedDate);
+    const cached = getCache(selectedDate);
     if (cached) {
-      applyPending(normalizeDash(cached), selectedDate).then(setDashboardState);
+      // Show real UI immediately from cache
+      setDashboardState(applyLocalPending(normalizeDash(cached), selectedDate));
       setInitialLoading(false);
-      load(selectedDate, false); // silent background refresh
+      load(selectedDate, false); // background refresh — updates silently
     } else {
-      load(selectedDate, true);  // no cache — show loading experience
+      load(selectedDate, true);  // first visit — show animated skeleton
     }
-  }, [selectedDate, load, applyPending]);
+  }, [selectedDate, load]);
 
-  // Reload when offline sync completes
+  // ── Reload after offline queue flush ───────────────────────────────────────
   useEffect(() => {
-    const h = () => load(selectedDate, false);
-    window.addEventListener('sync-complete', h);
-    return () => window.removeEventListener('sync-complete', h);
-  }, [load, selectedDate]);
+    const handler = () => load(selectedDate, false);
+    window.addEventListener('sync-complete', handler);
+    return () => window.removeEventListener('sync-complete', handler);
+  }, [selectedDate, load]);
 
-  // ─── derived values ───────────────────────────────────────────────────────
+  // ── Derived values ─────────────────────────────────────────────────────────
   const { habits, completions, stats } = dashboardState;
-  const completedIds = useMemo(() => new Set(completions.map((c) => c.habitId)), [completions]);
-  completedIdsRef.current = completedIds; // keep ref in sync
+  const completedIds   = useMemo(() => new Set(completions.map(c => c.habitId)), [completions]);
+  completedIdsRef.current = completedIds; // keep ref in sync (stable toggle callback)
 
   const completedCount  = completions.length;
   const totalHabits     = habits.length;
   const progressPercent = totalHabits ? (completedCount / totalHabits) * 100 : 0;
 
-  // ─── toggleHabit — only re-creates on date/load change ───────────────────
+  // ── toggleHabit ────────────────────────────────────────────────────────────
   const toggleHabit = useCallback(async (habitId) => {
     if (pendingIds.has(habitId)) return;
-    setPendingIds((s) => new Set(s).add(habitId));
+    setPendingIds(s => new Set(s).add(habitId));
 
-    const userId       = getOrCreateUserId();
-    const release      = () => setPendingIds((s) => { const n = new Set(s); n.delete(habitId); return n; });
+    const userId  = getOrCreateUserId();
+    const release = () => setPendingIds(s => { const n = new Set(s); n.delete(habitId); return n; });
     if (!userId) { release(); return; }
 
     const willComplete = !completedIdsRef.current.has(habitId);
 
-    // Optimistic UI
-    setDashboardState((prev) => {
-      const newC = willComplete
-        ? [...prev.completions, { id: -Date.now(), habitId, date: selectedDate }]
-        : prev.completions.filter((c) => c.habitId !== habitId);
-      let newCal = prev.calendar;
-      if (newCal) {
-        const cnt = newC.filter((c) => c.date === selectedDate).length;
-        newCal = {
-          ...newCal,
-          days: newCal.days.map((d) =>
-            d.date === selectedDate
-              ? { ...d, completed: cnt, full: prev.habits.length > 0 && cnt === prev.habits.length }
-              : d
-          ),
-        };
-      }
-      return { ...prev, completions: newC, calendar: newCal };
-    });
-
+    // ① Optimistic UI — instant, no wait
+    setDashboardState(prev => optimisticToggle(prev, habitId, selectedDate, willComplete));
     if (willComplete) { setGlowingId(habitId); setTimeout(() => setGlowingId(null), 700); }
 
-    // Offline path
-    if (!navigator.onLine) {
-      await enqueueSyncItem({ habitId, date: selectedDate, completed: willComplete, userId });
-      window.dispatchEvent(new Event('offline-item-queued'));
-      release();
-      return;
-    }
+    // ② Persist to localStorage queue — synchronous, survives network failure
+    const queueId = enqueue({ habitId, date: selectedDate, completed: willComplete, userId });
 
-    // Online path
+    // ③ Offline — queue will flush automatically when network returns
+    if (!navigator.onLine) { release(); return; }
+
+    // ④ Online — fire API immediately
     try {
       const res = await fetch('/api/complete', {
         method:  'POST',
         headers: { 'Content-Type': 'application/json', 'X-User-Id': userId },
         body:    JSON.stringify({ habitId, date: selectedDate, completed: willComplete }),
       });
-      if (!res.ok) { load(selectedDate, false); return; }
-      const data = await res.json();
-      setDashboardState((prev) => ({
-        ...prev,
-        completions: data.completions ?? prev.completions,
-        stats:       data.stats       ?? prev.stats,
-      }));
+
+      if (res.ok) {
+        const data = await res.json();
+        dequeue(queueId); // sent — remove from queue
+        // Patch only completions + stats (no full reload)
+        setDashboardState(prev => ({
+          ...prev,
+          completions: data.completions ?? prev.completions,
+          stats:       data.stats       ?? prev.stats,
+        }));
+      } else {
+        // Server rejected — revert optimistic UI with a silent reload
+        load(selectedDate, false);
+      }
     } catch {
-      await enqueueSyncItem({ habitId, date: selectedDate, completed: willComplete, userId });
-      window.dispatchEvent(new Event('offline-item-queued'));
+      // Network failed mid-request — item stays queued; optimistic UI stays
     } finally {
       release();
     }
-  }, [selectedDate, load]); // completedIds via ref — stable
-
-  // ─── settings / habit changes ─────────────────────────────────────────────
-  // Called by SettingsPanel after any add/remove/toggle — busts cache only,
-  // does NOT close the panel (user stays to make more changes).
-  const handleHabitsChanged = useCallback(() => {
-    clearCachedDashboard(selectedDate);
-  }, [selectedDate]);
-
-  // Called when the panel is dismissed (✕ or backdrop) — reload if needed.
-  const handleSettingsClose = useCallback(() => {
-    setShowSettings(false);
-    load(selectedDate, false); // silent refresh so Today shows updated habits
   }, [selectedDate, load]);
 
-  // ─── navigation ───────────────────────────────────────────────────────────
+  // ── Settings ───────────────────────────────────────────────────────────────
+  const handleHabitsChanged = useCallback(() => {
+    clearCache(selectedDate); // bust cache; panel stays open for more changes
+  }, [selectedDate]);
+
+  const handleSettingsClose = useCallback(() => {
+    setShowSettings(false);
+    load(selectedDate, false); // reload after all habit changes are done
+  }, [selectedDate, load]);
+
+  // ── Navigation ─────────────────────────────────────────────────────────────
   const navigateTo = useCallback((k) => {
     setSelectedDate(k);
     if (k === todayKey) router.replace('/today');
@@ -323,9 +319,9 @@ export default function TodayClient({ initialDate }) {
     if (selectedDate !== todayKey) navigateTo(clamp(shiftDate(selectedDate, 1), todayKey));
   };
 
-  // ─── render ───────────────────────────────────────────────────────────────
-  if (!onboardingDone)  return <Onboarding onComplete={() => setOnboardingDone(true)} />;
-  if (initialLoading)   return <LoadingDashboard />;
+  // ── Render ─────────────────────────────────────────────────────────────────
+  if (!onboardingDone) return <Onboarding onComplete={() => setOnboardingDone(true)} />;
+  if (initialLoading)  return <LoadingDashboard />;
 
   if (error) {
     return (
@@ -344,7 +340,6 @@ export default function TodayClient({ initialDate }) {
   return (
     <main className="min-h-screen mx-auto max-w-[420px] px-5 py-8 pb-24 bg-[#0f172a]">
 
-      {/* Settings panel */}
       {showSettings && (
         <SettingsPanel
           onClose={handleSettingsClose}
@@ -354,7 +349,6 @@ export default function TodayClient({ initialDate }) {
 
       {/* Header */}
       <section className="relative text-center mb-8">
-        {/* Gear icon — bare, no border/background */}
         <button
           type="button"
           onClick={() => setShowSettings(true)}
@@ -384,7 +378,7 @@ export default function TodayClient({ initialDate }) {
         )}
       </section>
 
-      {/* Date nav + progress + habits */}
+      {/* Date nav + progress bar + habits */}
       <section className="mb-8">
 
         <div className="flex items-center justify-between gap-3 mb-5">

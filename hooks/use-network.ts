@@ -3,17 +3,19 @@
 /**
  * hooks/use-network.ts
  *
- * Tracks online/offline status and manages the offline sync lifecycle:
- *   - Detects transition from offline → online
- *   - Flushes the IDB sync queue automatically when back online
- *   - Exposes pendingCount so the UI can show "X pending" in the banner
- *   - Dispatches a custom 'sync-complete' window event after a successful flush
- *     so TodayClient can reload fresh data
+ * Tracks online/offline status and drives the NetworkBanner.
+ *
+ * Queue reads are now SYNCHRONOUS (localStorage via local-store.js) so
+ * pendingCount updates without any async round-trip — instant badge update.
+ *
+ * processQueue() comes from sync-engine.js; the module-level _flushing flag
+ * prevents double-flush even if both this hook and TodayClient respond to
+ * the same 'online' event.
  */
 
-import { useState, useEffect, useCallback, useRef } from 'react';
-import { flushSyncQueue } from '../lib/sync-queue';
-import { countSyncItems } from '../lib/idb';
+import { useState, useEffect, useCallback } from 'react';
+import { processQueue }  from '../lib/sync-engine';
+import { getQueueCount } from '../lib/local-store';
 
 export interface NetworkState {
   isOnline:     boolean;
@@ -26,28 +28,21 @@ export function useNetwork(): NetworkState {
     typeof navigator !== 'undefined' ? navigator.onLine : true
   );
   const [pendingCount, setPendingCount] = useState(0);
-  const [isSyncing, setIsSyncing]       = useState(false);
+  const [isSyncing,    setIsSyncing]    = useState(false);
 
-  // Keep a ref so the online handler always sees the latest pendingCount
-  const pendingRef = useRef(pendingCount);
-  pendingRef.current = pendingCount;
-
-  const refreshCount = useCallback(async () => {
-    const n = await countSyncItems();
-    setPendingCount(n);
+  // Synchronous — no await, no flash
+  const refreshCount = useCallback(() => {
+    setPendingCount(getQueueCount());
   }, []);
 
   const syncNow = useCallback(async () => {
-    const count = await countSyncItems();
-    if (count === 0) return;
-
+    if (getQueueCount() === 0) return;
     setIsSyncing(true);
     try {
-      const { synced } = await flushSyncQueue();
-      await refreshCount();
-
+      const { synced } = await processQueue();
+      refreshCount();
       if (synced > 0) {
-        // Signal TodayClient + CalendarClient to reload fresh server data
+        // Signal any listening client (e.g. TodayClient) to reload fresh data
         window.dispatchEvent(new CustomEvent('sync-complete', { detail: { synced } }));
       }
     } finally {
@@ -56,13 +51,9 @@ export function useNetwork(): NetworkState {
   }, [refreshCount]);
 
   useEffect(() => {
-    // Hydrate count on mount
-    refreshCount();
+    refreshCount(); // hydrate count synchronously on mount
 
-    const handleOnline = () => {
-      setIsOnline(true);
-      syncNow();
-    };
+    const handleOnline  = () => { setIsOnline(true);  syncNow(); };
     const handleOffline = () => setIsOnline(false);
 
     window.addEventListener('online',  handleOnline);
@@ -73,7 +64,7 @@ export function useNetwork(): NetworkState {
     };
   }, [refreshCount, syncNow]);
 
-  // Also let external code increment the count without waiting for IDB
+  // Re-read count whenever the queue changes (enqueue/dequeue dispatches this)
   useEffect(() => {
     const handler = () => refreshCount();
     window.addEventListener('offline-item-queued', handler);
