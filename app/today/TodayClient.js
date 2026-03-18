@@ -16,6 +16,12 @@
  *   5. On reconnect: useNetwork hook flushes queue → dispatches 'sync-complete'
  *      → TodayClient reloads fresh data silently
  *
+ * RACE PREVENTION
+ *   loadGenRef — a generation counter incremented every time selectedDate changes
+ *   or a toggle starts. Any background load that resolves after a generation bump
+ *   is silently discarded, preventing stale server-cache data from overwriting
+ *   freshly-toggled state.
+ *
  * PERFORMANCE
  *   • applyLocalPending is synchronous (localStorage read, not IDB)
  *   • optimisticToggle is a pure function — no async, no state diffing
@@ -175,8 +181,27 @@ export default function TodayClient({ initialDate }) {
   const [pendingIds, setPendingIds]         = useState(new Set());
   const [showSettings, setShowSettings]     = useState(false);
 
-  // Stable ref so toggleHabit never closes over stale completedIds
+  // ── Refs ───────────────────────────────────────────────────────────────────
+  // completedIdsRef: stable ref so toggleHabit never closes over stale completedIds
   const completedIdsRef = useRef(new Set());
+
+  // pendingIdsRef: always-current guard for toggleHabit (pendingIds state would be
+  // stale inside the useCallback closure since it's not in the deps array)
+  const pendingIdsRef = useRef(new Set());
+
+  // loadGenRef: generation counter — incremented on every selectedDate change and
+  // on every toggle. Any load() call that captured an older generation is discarded
+  // when it resolves, preventing stale server-cache data from overwriting fresh
+  // optimistic state. (Core fix for the "re-checks after uncheck" race.)
+  const loadGenRef = useRef(0);
+
+  // hasRetriedRef: tracks whether we've already auto-retried the initial load once,
+  // so we don't retry infinitely on persistent server errors.
+  const hasRetriedRef = useRef(false);
+
+  // retryTimerRef: handle for the auto-retry setTimeout so we can cancel it on
+  // unmount or when a fresh manual retry is triggered.
+  const retryTimerRef = useRef(null);
 
   useEffect(() => { setSelectedDate(initDate); }, [initDate]);
 
@@ -186,13 +211,23 @@ export default function TodayClient({ initialDate }) {
     setGreeting(msgs[Math.floor(Math.random() * msgs.length)]);
   }, []);
 
+  // Cancel pending retries on unmount
+  useEffect(() => () => clearTimeout(retryTimerRef.current), []);
+
   // ── Load dashboard ─────────────────────────────────────────────────────────
-  // Deps: [] — uses only module-level helpers, never recreated across renders.
+  // Deps: [] — uses only module-level helpers + stable refs, never recreated.
   const load = useCallback(async (date, showLoader = false) => {
+    clearTimeout(retryTimerRef.current); // cancel any pending auto-retry
+
     const userId = getOrCreateUserId();
     if (!userId) return;
     if (showLoader) setInitialLoading(true);
     setError(null);
+
+    // Snapshot the generation counter. If a toggle (or navigation) happens while
+    // the fetch is in-flight, loadGenRef.current will have been incremented and
+    // we can detect that our data is now stale.
+    const gen = loadGenRef.current;
 
     try {
       const res = await fetch(`/api/dashboard?date=${date}`, {
@@ -201,26 +236,57 @@ export default function TodayClient({ initialDate }) {
       if (!res.ok) throw new Error('server');
       const data = await res.json();
 
+      // Discard stale responses — a toggle or navigation happened while we were
+      // waiting. The toggle's own setDashboardState is already authoritative.
+      if (loadGenRef.current !== gen) return;
+
+      hasRetriedRef.current = false; // reset retry flag on success
+
       // L1 write is synchronous; L2 (localStorage) write is debounced + rIC
       setCache(date, data);
       setDashboardState(applyLocalPending(normalizeDash(data), date));
       setInitialLoading(false);
 
     } catch {
-      // Offline or server error — fall back to whatever cache we have
+      // Bail silently if a more recent load/toggle has taken ownership
+      if (loadGenRef.current !== gen) return;
+
+      // Fall back to cache if available (works offline and on server errors)
       const cached = getCache(date);
       if (cached) {
         setDashboardState(applyLocalPending(normalizeDash(cached), date));
         setInitialLoading(false);
-      } else if (showLoader) {
+        hasRetriedRef.current = false;
+        return;
+      }
+
+      // No cache — show an error, but only after one auto-retry
+      if (!showLoader) return; // background refresh with no cache: fail silently
+
+      if (!navigator.onLine) {
+        // Genuinely offline
         setError('No cached data. Connect to load your habits.');
+        setInitialLoading(false);
+        hasRetriedRef.current = false;
+      } else if (!hasRetriedRef.current) {
+        // Online but server hiccup (cold start, transient 5xx) — retry once silently
+        hasRetriedRef.current = true;
+        retryTimerRef.current = setTimeout(() => load(date, true), 3000);
+        // Keep skeleton visible during the retry window
+      } else {
+        // Retry also failed — surface an honest error
+        hasRetriedRef.current = false;
+        setError('Unable to connect. Please check your connection and try again.');
         setInitialLoading(false);
       }
     }
-  }, []); // stable — module-level helpers only
+  }, []); // stable — module-level helpers + stable refs only
 
   // ── Startup: instant cache render → silent background refresh ──────────────
   useEffect(() => {
+    // Bump the generation so any load from a previous selectedDate is discarded
+    loadGenRef.current += 1;
+
     const cached = getCache(selectedDate);
     if (cached) {
       // Show real UI immediately from cache
@@ -250,11 +316,27 @@ export default function TodayClient({ initialDate }) {
 
   // ── toggleHabit ────────────────────────────────────────────────────────────
   const toggleHabit = useCallback(async (habitId) => {
-    if (pendingIds.has(habitId)) return;
-    setPendingIds(s => new Set(s).add(habitId));
+    // Use the ref (not the stale closure value of pendingIds state) so this guard
+    // always sees the current set of in-flight habits.
+    if (pendingIdsRef.current.has(habitId)) return;
 
-    const userId  = getOrCreateUserId();
-    const release = () => setPendingIds(s => { const n = new Set(s); n.delete(habitId); return n; });
+    // Mark as pending in both the ref (immediate) and state (for render)
+    const nextPending = new Set(pendingIdsRef.current);
+    nextPending.add(habitId);
+    pendingIdsRef.current = nextPending;
+    setPendingIds(nextPending);
+
+    // Invalidate any in-flight background load — its server data may be stale
+    // relative to the optimistic change we're about to make.
+    loadGenRef.current += 1;
+
+    const userId = getOrCreateUserId();
+    const release = () => {
+      const n = new Set(pendingIdsRef.current);
+      n.delete(habitId);
+      pendingIdsRef.current = n;
+      setPendingIds(n);
+    };
     if (!userId) { release(); return; }
 
     const willComplete = !completedIdsRef.current.has(habitId);
@@ -280,12 +362,19 @@ export default function TodayClient({ initialDate }) {
       if (res.ok) {
         const data = await res.json();
         dequeue(queueId); // sent — remove from queue
-        // Patch only completions + stats (no full reload)
-        setDashboardState(prev => ({
-          ...prev,
-          completions: data.completions ?? prev.completions,
-          stats:       data.stats       ?? prev.stats,
-        }));
+
+        // Patch from server response, then re-overlay any OTHER habits that are
+        // still pending in the queue (e.g., rapid multi-habit toggling).
+        // Without applyLocalPending here, concurrent toggles would briefly
+        // disappear when one API call resolves before the other.
+        setDashboardState(prev => {
+          const patched = {
+            ...prev,
+            completions: data.completions ?? prev.completions,
+            stats:       data.stats       ?? prev.stats,
+          };
+          return applyLocalPending(patched, selectedDate);
+        });
       } else {
         // Server rejected — revert optimistic UI with a silent reload
         load(selectedDate, false);
@@ -327,9 +416,11 @@ export default function TodayClient({ initialDate }) {
     return (
       <main className="min-h-screen flex flex-col items-center justify-center bg-[#0f172a] px-5 pb-20">
         <p className="text-4xl mb-4">📡</p>
-        <p className="text-slate-300 font-semibold mb-2">You&apos;re offline</p>
+        <p className="text-slate-300 font-semibold mb-2">
+          {navigator.onLine ? 'Connection error' : "You're offline"}
+        </p>
         <p className="text-[#94a3b8] text-sm text-center mb-6">{error}</p>
-        <button type="button" onClick={() => load(selectedDate, true)}
+        <button type="button" onClick={() => { hasRetriedRef.current = false; load(selectedDate, true); }}
           className="rounded-xl bg-[#1e293b] text-slate-100 px-4 py-2 font-medium border border-white/10">
           Retry
         </button>
