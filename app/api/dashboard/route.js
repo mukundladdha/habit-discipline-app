@@ -1,26 +1,26 @@
 import { NextResponse } from 'next/server';
 import { prisma } from '../../../lib/prisma';
 import { extractUserId, getOrCreateUser, renameHabit } from '../../../lib/users';
-import { computeAllStats, buildCalendar, computePerHabitStats } from '../../../lib/stats';
+import { computeAllStats, buildCalendar, computePerHabitDetailed } from '../../../lib/stats';
 
 /**
  * GET /api/dashboard?date=YYYY-MM-DD
  *
- * Single endpoint — returns everything every view needs:
+ * Single endpoint returning everything every view needs:
  *   { habits, completions, calendar, stats }
  *
- * stats now includes perHabit breakdown so the /stats page never needs
- * its own API call — it reads from the client-side dashboard cache.
+ * stats shape: { streak, progress, perHabit[] }
+ *   perHabit[]:  { id, name, streak, last7Days: bool[7], completedLast21 }
+ *
+ * Best streak and completion % removed — Progress tab derives only what it shows.
  *
  * DB: one $transaction with THREE parallelised queries (one DB round-trip).
  *
  * Server cache (module Map, 30 s TTL):
  *   Warm serverless instances reuse results — useful when the user is
- *   rapidly navigating between Today/Stats/Calendar.
+ *   rapidly navigating between Today and Progress.
  *
  * Cache-Control: private, max-age=20, stale-while-revalidate=40
- *   Browser serves the cached response instantly for 20 s, then
- *   revalidates in the background — zero perceived latency on re-visits.
  */
 
 // ── Server-side in-memory cache (warm lambda) ────────────────────────────────
@@ -35,7 +35,7 @@ function sGet(key) {
 function sSet(key, payload) {
   SERVER_CACHE.set(key, { payload, ts: Date.now() });
   if (SERVER_CACHE.size > SERVER_CACHE_MAX) {
-    SERVER_CACHE.delete(SERVER_CACHE.keys().next().value); // evict oldest
+    SERVER_CACHE.delete(SERVER_CACHE.keys().next().value);
   }
 }
 
@@ -65,7 +65,7 @@ export async function GET(request) {
   }
 
   try {
-    // ── 1. Resolve user (creates account + default habits on first call) ──────
+    // ── 1. Resolve user ───────────────────────────────────────────────────────
     const user       = await getOrCreateUser(userId);
     const habits     = user.habits.map(renameHabit);
     const habitCount = habits.length;
@@ -74,16 +74,16 @@ export async function GET(request) {
       .toISOString().slice(0, 10);
 
     // ── 2. Three reads in ONE transaction — single DB round-trip ─────────────
-    const [completionsForDate, historyGroups, perHabitGroups] = await prisma.$transaction([
+    const [completionsForDate, historyGroups, perHabitRecords] = await prisma.$transaction([
 
-      // 2a. Completions for the requested date — only for active habits
+      // 2a. Completions for the requested date (Today view rendering)
       prisma.completion.findMany({
         where:   { userId, date, habit: { isActive: true } },
         select:  { id: true, habitId: true, date: true },
         orderBy: { habitId: 'asc' },
       }),
 
-      // 2b. Per-day counts for streak + calendar + overall stats (active habits only)
+      // 2b. Per-day counts for streak + calendar (active habits only)
       prisma.completion.groupBy({
         by:      ['date'],
         where:   { userId, date: { gte: lookbackStr }, habit: { isActive: true } },
@@ -91,23 +91,22 @@ export async function GET(request) {
         orderBy: { date: 'asc' },
       }),
 
-      // 2c. Per-habit counts — used for the Stats page breakdown (active habits only)
-      prisma.completion.groupBy({
-        by:     ['habitId'],
+      // 2c. Individual completion records — used to compute per-habit streak,
+      //     last7Days, and 21-day count (replaces the old groupBy habitId).
+      prisma.completion.findMany({
         where:  { userId, date: { gte: lookbackStr }, habit: { isActive: true } },
-        _count: { habitId: true },
+        select: { habitId: true, date: true },
       }),
     ]);
 
-    // ── 3. Compute everything in memory — O(n), zero extra DB calls ───────────
-    const baseStats        = computeAllStats(historyGroups, habitCount);
-    const totalTrackedDays = historyGroups.length; // days with ≥1 completion
-    const perHabit         = computePerHabitStats(perHabitGroups, habits, totalTrackedDays);
+    // ── 3. Compute everything in memory ──────────────────────────────────────
+    const today    = now.toISOString().slice(0, 10); // always real today for streaks
+    const baseStats = computeAllStats(historyGroups, habitCount);
+    const perHabit  = computePerHabitDetailed(perHabitRecords, habits, today);
 
     const stats = {
-      ...baseStats,
-      overallRate: baseStats.rate, // alias for stats page compatibility
-      totalTrackedDays,
+      streak:   baseStats.streak,
+      progress: baseStats.progress,
       perHabit,
     };
 

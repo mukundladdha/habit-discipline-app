@@ -1,7 +1,7 @@
 import { NextResponse } from 'next/server';
 import { prisma } from '../../../lib/prisma';
 import { extractUserId, getOrCreateUser, renameHabit } from '../../../lib/users';
-import { computeAllStats, computePerHabitStats } from '../../../lib/stats';
+import { computeAllStats, computePerHabitDetailed } from '../../../lib/stats';
 
 /**
  * GET /api/stats
@@ -40,28 +40,25 @@ export async function GET(request) {
       .toISOString().slice(0, 10);
 
     // Two groupBy queries in one round-trip
-    const [historyGroups, perHabitGroups] = await prisma.$transaction([
+    const [historyGroups, perHabitRecords] = await prisma.$transaction([
       prisma.completion.groupBy({
         by:      ['date'],
         where:   { userId, date: { gte: lookbackStr } },
         _count:  { date: true },
         orderBy: { date: 'asc' },
       }),
-      prisma.completion.groupBy({
-        by:     ['habitId'],
+      prisma.completion.findMany({
         where:  { userId, date: { gte: lookbackStr } },
-        _count: { habitId: true },
+        select: { habitId: true, date: true },
       }),
     ]);
 
-    const baseStats        = computeAllStats(historyGroups, habitCount);
-    const totalTrackedDays = historyGroups.length;
-    const perHabit         = computePerHabitStats(perHabitGroups, habits, totalTrackedDays);
+    const today    = new Date().toISOString().slice(0, 10);
+    const baseStats = computeAllStats(historyGroups, habitCount);
+    const perHabit  = computePerHabitDetailed(perHabitRecords, habits, today);
 
     return NextResponse.json({
       ...baseStats,
-      overallRate: baseStats.rate,
-      totalTrackedDays,
       perHabit,
     }, {
       headers: { 'Cache-Control': 'private, max-age=30, stale-while-revalidate=60' },

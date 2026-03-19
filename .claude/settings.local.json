@@ -13,7 +13,28 @@
       "Bash(curl -s \"https://fitstreak-chi.vercel.app/api/completions?date=2026-03-16\")",
       "Bash(curl -s \"https://fitstreak-chi.vercel.app/api/habits\")",
       "Bash(curl -sv \"https://fitstreak-chi.vercel.app/api/completions?date=2026-03-16\")",
-      "Bash(npx prisma:*)"
+      "Bash(npx prisma:*)",
+      "Bash(npm run:*)",
+      "Bash(mkdir -p ~/Documents/Artefacts)",
+      "Read(//Users/mukund/Documents/**)",
+      "Bash(npx create-next-app@latest . --typescript --tailwind --eslint --app --src-dir --import-alias \"@/*\" --yes)",
+      "Bash(npx create-next-app@latest . --typescript --tailwind --eslint --app --src-dir --import-alias \"@/*\" --yes --name artefacts)",
+      "Bash(mkdir -p ~/Documents/artefacts)",
+      "Bash(mkdir -p ~/Documents/artefact-app)",
+      "Bash(curl -s -X POST http://localhost:3002/api/generate -H \"Content-Type: application/json\" -d '{\"\"\"\"type\"\"\"\":\"\"\"\"prd\"\"\"\",\"\"\"\"context\"\"\"\":\"\"\"\"test\"\"\"\",\"\"\"\"messages\"\"\"\":[],\"\"\"\"currentOutput\"\"\"\":\"\"\"\"\"\"\"\"}')",
+      "Bash(curl -s -X POST http://localhost:3002/api/generate -H \"Content-Type: application/json\" -d '{\"\"\"\"type\"\"\"\":\"\"\"\"prd\"\"\"\",\"\"\"\"context\"\"\"\":\"\"\"\"## Business Requirements\\\\nBuild a simple todo app for mobile\"\"\"\",\"\"\"\"messages\"\"\"\":[],\"\"\"\"currentOutput\"\"\"\":\"\"\"\"\"\"\"\"}' --max-time 15)",
+      "Bash(ls ~/Documents/artefact-app/.env*)",
+      "Bash(node -e \"require\\(''dotenv''\\).config\\({path:''/Users/mukund/Documents/artefact-app/.env.local''}\\); console.log\\(process.env.ANTHROPIC_API_KEY?.slice\\(0,20\\)\\)\")",
+      "Bash(xxd ~/Documents/artefact-app/.env.local)",
+      "Bash(curl -s -X POST http://localhost:3002/api/generate -H \"Content-Type: application/json\" -d '{\"\"\"\"type\"\"\"\":\"\"\"\"prd\"\"\"\",\"\"\"\"context\"\"\"\":\"\"\"\"## Business Requirements\\\\nBuild a simple todo app\"\"\"\",\"\"\"\"messages\"\"\"\":[],\"\"\"\"currentOutput\"\"\"\":\"\"\"\"\"\"\"\"}' --max-time 20)",
+      "Bash(curl -s -X POST http://localhost:3002/api/generate -H \"Content-Type: application/json\" -d '{\"\"\"\"type\"\"\"\":\"\"\"\"prd\"\"\"\",\"\"\"\"context\"\"\"\":\"\"\"\"test\"\"\"\",\"\"\"\"messages\"\"\"\":[],\"\"\"\"currentOutput\"\"\"\":\"\"\"\"\"\"\"\"}' --max-time 10)",
+      "Bash(node -e \":*)",
+      "Bash(curl -s -X POST http://localhost:3002/api/generate -H \"Content-Type: application/json\" -d '{\"\"\"\"type\"\"\"\":\"\"\"\"prd\"\"\"\",\"\"\"\"context\"\"\"\":\"\"\"\"## Business Requirements\\\\nBuild a mobile todo app for busy professionals\"\"\"\",\"\"\"\"messages\"\"\"\":[],\"\"\"\"currentOutput\"\"\"\":\"\"\"\"\"\"\"\"}' --max-time 25)",
+      "Bash(curl -s \"https://generativelanguage.googleapis.com/v1beta/models?key=AIzaSyA5zIOJSzMiVDNLUUIS9lal56sSXLNCamw\")",
+      "Bash(curl -s -X POST http://localhost:3002/api/generate -H \"Content-Type: application/json\" -d '{\"\"\"\"type\"\"\"\":\"\"\"\"prd\"\"\"\",\"\"\"\"context\"\"\"\":\"\"\"\"## Business Requirements\\\\nBuild a mobile todo app for busy professionals\"\"\"\",\"\"\"\"messages\"\"\"\":[],\"\"\"\"currentOutput\"\"\"\":\"\"\"\"\"\"\"\"}' --max-time 30)",
+      "Bash(curl -s http://localhost:3002 -o /dev/null -w \"%{http_code}\")",
+      "Bash(mkdir -p ~/Documents/project-fivethirtyeight)",
+      "Bash(npm create:*)"
     ]
   }
 }

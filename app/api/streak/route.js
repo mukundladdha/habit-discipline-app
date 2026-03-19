@@ -1,7 +1,7 @@
 import { NextResponse } from 'next/server';
 import { prisma } from '../../../lib/prisma';
 import { extractUserId, getOrCreateUser } from '../../../lib/users';
-import { computeCurrentStreak, computeBestStreak } from '../../../lib/stats';
+import { computeCurrentStreak } from '../../../lib/stats';
 
 /**
  * GET /api/streak
@@ -32,8 +32,7 @@ export async function GET(request) {
     });
 
     return NextResponse.json({
-      streak:  computeCurrentStreak(groups, habitCount),
-      highest: computeBestStreak(groups, habitCount),
+      streak: computeCurrentStreak(groups, habitCount),
     });
   } catch (e) {
     console.error('[streak]', e);
