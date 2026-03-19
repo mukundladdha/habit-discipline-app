@@ -78,7 +78,8 @@ const DayCell = memo(function DayCell({ day, todayKey, isSelected, onSelect }) {
 // ── Habit breakdown: single habit card ────────────────────────────────────────
 
 const HabitCard = memo(function HabitCard({ habit, index }) {
-  const { name, streak, last7Days, completedLast21 } = habit;
+  const { name, streak, last7Days } = habit;
+  const completedLast7 = last7Days.filter(Boolean).length;
 
   // Today is the last element (index 6) of last7Days
   const dayLabels = ['','','','','','',''];  // dots only — no text labels
@@ -135,24 +136,23 @@ const HabitCard = memo(function HabitCard({ habit, index }) {
             <div
               className="h-full rounded-full bg-gradient-to-r from-[#22c55e] to-[#16a34a]"
               style={{
-                width: `${Math.round((completedLast21 / 21) * 100)}%`,
+                width: `${Math.round((completedLast7 / 7) * 100)}%`,
                 transition: 'width 0.6s cubic-bezier(0.4,0,0.2,1)',
               }}
             />
           </div>
         </div>
         <span className="shrink-0 ml-3 text-xs tabular-nums text-[#94a3b8] font-medium">
-          {completedLast21}<span className="text-slate-600">/21</span>
+          {completedLast7}<span className="text-slate-600">/7</span>
         </span>
       </div>
     </div>
   );
 }, (p, n) =>
-  p.habit.streak          === n.habit.streak          &&
-  p.habit.completedLast21 === n.habit.completedLast21 &&
-  p.habit.last7Days       === n.habit.last7Days        &&
-  p.habit.name            === n.habit.name             &&
-  p.index                 === n.index
+  p.habit.streak    === n.habit.streak    &&
+  p.habit.last7Days === n.habit.last7Days &&
+  p.habit.name      === n.habit.name      &&
+  p.index           === n.index
 );
 
 // ── Main page ──────────────────────────────────────────────────────────────────
@@ -167,17 +167,18 @@ export default function ProgressPage() {
   }));
   const isCurrentMonth = view.year === now.getFullYear() && view.month === now.getMonth() + 1;
 
-  // ── Data state — initialised from cache for instant render ────────────────
-  const [calendar, setCalendar] = useState(() => {
-    const d = getCache(getTodayKey());
-    return d?.calendar ?? null;
-  });
-  const [perHabit, setPerHabit] = useState(() => {
-    const d = getCache(getTodayKey());
-    return d?.stats?.perHabit ?? [];
-  });
+  // ── Data state — SSR-safe init; cache read client-side in useEffect ───────
+  const [calendar, setCalendar] = useState(null);
+  const [perHabit, setPerHabit] = useState([]);
   const [loadingCalendar, setLoadingCalendar] = useState(false);
   const [selectedDay, setSelectedDay]         = useState(null); // {date, completed, total, full}
+
+  // Read cache client-side only (prevents SSR/client hydration mismatch)
+  useEffect(() => {
+    const d = getCache(getTodayKey());
+    if (d?.calendar)             setCalendar(d.calendar);
+    if (d?.stats?.perHabit?.length) setPerHabit(d.stats.perHabit);
+  }, []);
 
   // ── Fetch helpers ─────────────────────────────────────────────────────────
 
@@ -343,7 +344,7 @@ export default function ProgressPage() {
       <section>
         <div className="flex items-baseline justify-between mb-4">
           <h2 className="text-base font-bold text-slate-100 tracking-tight">Habit Breakdown</h2>
-          <span className="text-xs text-[#94a3b8] font-medium">Last 21 days</span>
+          <span className="text-xs text-[#94a3b8] font-medium">Last 7 days</span>
         </div>
 
         {perHabit.length === 0 ? (
