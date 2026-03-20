@@ -79,6 +79,7 @@ const DayCell = memo(function DayCell({ day, todayKey, isSelected, onSelect }) {
 
 const HabitCard = memo(function HabitCard({ habit, index }) {
   const { name, streak, last7Days } = habit;
+  const completedLast7 = last7Days.filter(Boolean).length;
 
   return (
     <div
@@ -104,7 +105,7 @@ const HabitCard = memo(function HabitCard({ habit, index }) {
       </div>
 
       {/* Row 2: last 7 days dots */}
-      <div className="flex items-center gap-[5px]" aria-label="Last 7 days">
+      <div className="flex items-center gap-[5px] mb-3" aria-label="Last 7 days">
         {last7Days.map((done, i) => {
           const isToday = i === 6;
           return (
@@ -123,6 +124,24 @@ const HabitCard = memo(function HabitCard({ habit, index }) {
             </div>
           );
         })}
+      </div>
+
+      {/* Row 3: 7-day progress bar + count */}
+      <div className="flex items-center justify-between">
+        <div className="flex items-center gap-2 flex-1">
+          <div className="h-1.5 flex-1 rounded-full bg-slate-700/60 overflow-hidden">
+            <div
+              className="h-full rounded-full bg-gradient-to-r from-[#22c55e] to-[#16a34a]"
+              style={{
+                width: `${Math.round((completedLast7 / 7) * 100)}%`,
+                transition: 'width 0.6s cubic-bezier(0.4,0,0.2,1)',
+              }}
+            />
+          </div>
+        </div>
+        <span className="shrink-0 ml-3 text-xs tabular-nums text-[#94a3b8] font-medium">
+          {completedLast7}<span className="text-slate-600">/7</span>
+        </span>
       </div>
     </div>
   );

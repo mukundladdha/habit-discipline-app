@@ -461,12 +461,6 @@ export default function TodayClient({ initialDate }) {
         <p className="text-3xl font-bold tracking-tight text-slate-100">
           🔥 <span className="text-[#22c55e]">{stats.streak}</span> Day Streak
         </p>
-        {selectedDate === todayKey && (
-          <p className="text-[#94a3b8] text-sm mt-2">
-            Day {Math.min(Math.max(stats.progress, 1), 21)} / 21
-            {' · '}Complete today&apos;s disciplines.
-          </p>
-        )}
       </section>
 
       {/* Date nav + progress bar + habits */}
