@@ -6,70 +6,40 @@
  * Shown only on a new user's very first app load (no localStorage cache yet).
  * Returning users never see this — they get instant data from the cache.
  *
- * Concept: "Climbing progress"
- *   A glowing dot rises step-by-step through milestone nodes on a vertical
- *   path while the text rotates through motivational phrases.
- *   Skeleton cards below fill the page so there's no blank white space.
- *
- * Design rules met:
- *   ✓  Pure CSS animations — no Framer Motion, no JS animation loop
- *   ✓  < 3 kB total (component + CSS)
- *   ✓  60 fps via transform/opacity only (no layout thrashing)
- *   ✓  Works on mobile PWA (no hover states required)
+ * Design: shimmering skeleton cards + rotating inspiring quote.
+ * Pure CSS shimmer — no Framer Motion, no JS animation loop.
  */
 
 import { useState, useEffect } from 'react';
 
-const MESSAGES = [
+const QUOTES = [
   'Building discipline…',
-  'One step at a time…',
-  'Consistency wins.',
+  'Small steps. Big results.',
+  'Consistency is the key.',
   'Showing up is enough.',
-  'Loading your habits…',
+  'One habit at a time.',
+  'You\'re already ahead.',
 ];
-
-const NODE_COUNT = 5;
 
 export default function LoadingDashboard() {
   const [msgIdx, setMsgIdx] = useState(0);
 
   useEffect(() => {
     const t = setInterval(
-      () => setMsgIdx((i) => (i + 1) % MESSAGES.length),
-      1500
+      () => setMsgIdx((i) => (i + 1) % QUOTES.length),
+      1600
     );
     return () => clearInterval(t);
   }, []);
 
   return (
     <main className="loading-db-root">
-      {/* ── Animated climbing path ─────────────────────────────── */}
-      <div className="loading-db-path-wrap" aria-hidden="true">
-        {/* Vertical glowing line */}
-        <div className="loading-db-line" />
-
-        {/* Milestone nodes */}
-        {Array.from({ length: NODE_COUNT }).map((_, i) => (
-          <div
-            key={i}
-            className="loading-db-node"
-            style={{
-              bottom:           `${(i / (NODE_COUNT - 1)) * 100}%`,
-              animationDelay:   `${i * 0.22}s`,
-            }}
-          />
-        ))}
-
-        {/* The rising climber dot */}
-        <div className="loading-db-climber" />
-      </div>
-
-      {/* ── Rotating motivational text ─────────────────────────── */}
+      {/* Rotating inspiring quote */}
       <p key={msgIdx} className="loading-db-msg">
-        {MESSAGES[msgIdx]}
+        {QUOTES[msgIdx]}
       </p>
 
-      {/* ── Skeleton cards — fill the page so nothing looks empty ─ */}
+      {/* Skeleton cards with shimmer */}
       <div className="loading-db-skeletons">
         {/* Progress card skeleton */}
         <div className="skel-card">
