@@ -122,7 +122,18 @@ export async function GET(request) {
       historyGroups, normalizedHabits, now.getFullYear(), now.getMonth() + 1
     );
 
-    const payload = { habits, completions: completionsForDate, calendar, stats };
+    // Filter habits/completions to those that existed on the requested date so
+    // the Today view's list and X/Y count are accurate for past-date navigation.
+    const habitsForDate = normalizedHabits.filter(h => {
+      const hDate = h.createdAt instanceof Date
+        ? h.createdAt.toISOString().slice(0, 10)
+        : String(h.createdAt).slice(0, 10);
+      return hDate <= date;
+    });
+    const habitIdsForDate     = new Set(habitsForDate.map(h => h.id));
+    const completionsForDate2 = completionsForDate.filter(c => habitIdsForDate.has(c.habitId));
+
+    const payload = { habits: habitsForDate, completions: completionsForDate2, calendar, stats };
 
     // ── 4. Cache + respond ────────────────────────────────────────────────────
     sSet(cacheKey, payload);
