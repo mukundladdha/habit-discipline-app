@@ -25,8 +25,8 @@ export async function GET(request) {
   }
 
   try {
-    const user = await getOrCreateUser(userId);
-    const habitCount = user.habits.length;
+    const user   = await getOrCreateUser(userId);
+    const habits = user.habits; // includes createdAt for per-day habit counts
 
     const startStr = `${year}-${String(month).padStart(2, '0')}-01`;
     // last day: first day of next month minus one day
@@ -40,7 +40,7 @@ export async function GET(request) {
       orderBy: { date: 'asc' },
     });
 
-    return NextResponse.json(buildCalendar(groups, habitCount, year, month));
+    return NextResponse.json(buildCalendar(groups, habits, year, month));
   } catch (e) {
     console.error('[calendar]', e);
     return NextResponse.json({ error: 'Failed to fetch calendar' }, { status: 500 });

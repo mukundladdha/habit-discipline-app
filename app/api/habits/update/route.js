@@ -50,6 +50,7 @@ export async function POST(request) {
           name:      name.trim(),
           sortOrder: (maxOrder._max.sortOrder ?? -1) + 1,
           isActive:  true,
+          createdAt: new Date(), // stamp so past days don't count this habit
         },
       });
     }
@@ -86,7 +87,11 @@ export async function POST(request) {
 
       await prisma.habit.update({
         where: { id: habitId },
-        data:  { isActive: !habit.isActive },
+        // When re-activating, reset createdAt to today so it doesn't retroactively
+        // affect past streaks/calendar. When deactivating, preserve the date.
+        data: habit.isActive
+          ? { isActive: false }
+          : { isActive: true, createdAt: new Date() },
       });
     }
 

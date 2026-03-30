@@ -25,6 +25,7 @@ model Habit {
   name        String
   sortOrder   Int          @default(0)
   isActive    Boolean      @default(true)
+  createdAt   DateTime?                   // null = legacy habit, treated as always existed
   completions Completion[]
 
   @@index([userId])

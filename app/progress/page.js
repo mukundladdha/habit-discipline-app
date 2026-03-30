@@ -41,7 +41,32 @@ function fmtDayLong(dateStr) {
 
 const DayCell = memo(function DayCell({ day, todayKey, isSelected, onSelect }) {
   const isToday  = day.date === todayKey;
+  const isPast   = day.date < todayKey;
   const dayNum   = new Date(day.date + 'T12:00:00').getDate();
+
+  // Colour logic (evaluated top-to-bottom, first match wins):
+  //   today          → green ring (handled separately for selected/unselected)
+  //   no habits yet  → greyed out (before habit tracking started)
+  //   all done       → solid green
+  //   some done      → soft green
+  //   missed past    → light red (habits existed but 0 completed)
+  //   future/today 0 → neutral slate
+  let bgClass;
+  if (isToday) {
+    bgClass = isSelected
+      ? 'ring-2 ring-[#22c55e] ring-offset-2 ring-offset-[#1e293b] bg-[#22c55e] text-white'
+      : 'ring-2 ring-[#22c55e] ring-offset-2 ring-offset-[#1e293b] bg-[#22c55e]/10 text-[#22c55e]';
+  } else if (!day.hasHabits) {
+    bgClass = 'bg-slate-800/20 text-slate-600/50 cursor-default';
+  } else if (day.full) {
+    bgClass = 'bg-[#22c55e] text-white';
+  } else if (day.completed > 0) {
+    bgClass = 'bg-[#22c55e]/20 text-[#22c55e]';
+  } else if (isPast) {
+    bgClass = 'bg-red-500/15 text-red-400/70';
+  } else {
+    bgClass = 'bg-slate-700/40 text-[#94a3b8]';
+  }
 
   return (
     <button
@@ -50,18 +75,10 @@ const DayCell = memo(function DayCell({ day, todayKey, isSelected, onSelect }) {
       className={[
         'aspect-square rounded-xl flex items-center justify-center',
         'text-xs font-semibold transition-all active:scale-[0.92]',
-        isSelected
+        isSelected && !isToday
           ? 'ring-2 ring-white/40 ring-offset-1 ring-offset-[#1e293b]'
           : '',
-        isToday && !isSelected
-          ? 'ring-2 ring-[#22c55e] ring-offset-2 ring-offset-[#1e293b] bg-[#22c55e]/10 text-[#22c55e]'
-          : isToday && isSelected
-            ? 'ring-2 ring-[#22c55e] ring-offset-2 ring-offset-[#1e293b] bg-[#22c55e] text-white'
-            : day.full
-              ? 'bg-[#22c55e] text-white'
-              : day.completed > 0
-                ? 'bg-[#22c55e]/20 text-[#22c55e]'
-                : 'bg-slate-700/40 text-[#94a3b8]',
+        bgClass,
       ].join(' ')}
     >
       {dayNum}
@@ -71,6 +88,7 @@ const DayCell = memo(function DayCell({ day, todayKey, isSelected, onSelect }) {
   p.day.date      === n.day.date      &&
   p.day.completed === n.day.completed &&
   p.day.full      === n.day.full      &&
+  p.day.hasHabits === n.day.hasHabits &&
   p.isSelected    === n.isSelected    &&
   p.todayKey      === n.todayKey
 );

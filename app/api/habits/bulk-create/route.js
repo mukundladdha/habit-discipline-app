@@ -45,13 +45,15 @@ export async function POST(request) {
       data:   { isActive: false },
     });
 
-    // Create the selected habits
+    // Create the selected habits — stamp createdAt so future calendar is date-aware
+    const now = new Date();
     await prisma.habit.createMany({
       data: habits.map((h, i) => ({
         userId,
         name:      h.name.trim(),
         sortOrder: typeof h.sortOrder === 'number' ? h.sortOrder : i,
         isActive:  true,
+        createdAt: now,
       })),
     });
 

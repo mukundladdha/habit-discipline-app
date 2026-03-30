@@ -66,9 +66,8 @@ export async function GET(request) {
 
   try {
     // ── 1. Resolve user ───────────────────────────────────────────────────────
-    const user       = await getOrCreateUser(userId);
-    const habits     = user.habits.map(renameHabit);
-    const habitCount = habits.length;
+    const user   = await getOrCreateUser(userId);
+    const habits = user.habits.map(renameHabit); // includes createdAt for per-day counts
 
     const lookbackStr = new Date(Date.now() - LOOKBACK_DAYS * 86_400_000)
       .toISOString().slice(0, 10);
@@ -101,7 +100,7 @@ export async function GET(request) {
 
     // ── 3. Compute everything in memory ──────────────────────────────────────
     const today    = now.toISOString().slice(0, 10); // always real today for streaks
-    const baseStats = computeAllStats(historyGroups, habitCount);
+    const baseStats = computeAllStats(historyGroups, habits);
     const perHabit  = computePerHabitDetailed(perHabitRecords, habits, today);
 
     const stats = {
@@ -111,7 +110,7 @@ export async function GET(request) {
     };
 
     const calendar = buildCalendar(
-      historyGroups, habitCount, now.getFullYear(), now.getMonth() + 1
+      historyGroups, habits, now.getFullYear(), now.getMonth() + 1
     );
 
     const payload = { habits, completions: completionsForDate, calendar, stats };
