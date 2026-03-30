@@ -1,7 +1,7 @@
 import { NextResponse } from 'next/server';
 import { prisma } from '../../../lib/prisma';
 import { extractUserId, getOrCreateUser } from '../../../lib/users';
-import { buildCalendar } from '../../../lib/stats';
+import { buildCalendar, normalizeHabitDates } from '../../../lib/stats';
 
 /**
  * GET /api/calendar?year=YYYY&month=M
@@ -28,6 +28,18 @@ export async function GET(request) {
     const user   = await getOrCreateUser(userId);
     const habits = user.habits; // includes createdAt for per-day habit counts
 
+    // Find all-time earliest completion so legacy habits (null createdAt) don't
+    // make days before the user ever tracked appear as missed (red).
+    const firstCompletion = await prisma.completion.findFirst({
+      where:   { userId },
+      orderBy: { date: 'asc' },
+      select:  { date: true },
+    });
+    const fallbackDate     = firstCompletion
+      ? new Date(firstCompletion.date + 'T00:00:00Z')
+      : new Date();
+    const normalizedHabits = normalizeHabitDates(habits, fallbackDate);
+
     const startStr = `${year}-${String(month).padStart(2, '0')}-01`;
     // last day: first day of next month minus one day
     const endDate = new Date(year, month, 0); // day 0 of next month = last day of this month
@@ -40,7 +52,7 @@ export async function GET(request) {
       orderBy: { date: 'asc' },
     });
 
-    return NextResponse.json(buildCalendar(groups, habits, year, month));
+    return NextResponse.json(buildCalendar(groups, normalizedHabits, year, month));
   } catch (e) {
     console.error('[calendar]', e);
     return NextResponse.json({ error: 'Failed to fetch calendar' }, { status: 500 });

@@ -1,7 +1,7 @@
 import { NextResponse } from 'next/server';
 import { prisma } from '../../../lib/prisma';
 import { extractUserId, getOrCreateUser, renameHabit } from '../../../lib/users';
-import { computeAllStats, buildCalendar, computePerHabitDetailed } from '../../../lib/stats';
+import { computeAllStats, buildCalendar, computePerHabitDetailed, normalizeHabitDates } from '../../../lib/stats';
 
 /**
  * GET /api/dashboard?date=YYYY-MM-DD
@@ -100,8 +100,17 @@ export async function GET(request) {
 
     // ── 3. Compute everything in memory ──────────────────────────────────────
     const today    = now.toISOString().slice(0, 10); // always real today for streaks
-    const baseStats = computeAllStats(historyGroups, habits);
-    const perHabit  = computePerHabitDetailed(perHabitRecords, habits, today);
+
+    // For legacy habits (createdAt = null), use the earliest known completion
+    // date so days before the user ever tracked show as grey, not red.
+    // historyGroups is ordered by date asc, so [0] is the earliest.
+    const fallbackDate = historyGroups.length > 0
+      ? new Date(historyGroups[0].date + 'T00:00:00Z')
+      : now;
+    const normalizedHabits = normalizeHabitDates(habits, fallbackDate);
+
+    const baseStats = computeAllStats(historyGroups, normalizedHabits);
+    const perHabit  = computePerHabitDetailed(perHabitRecords, normalizedHabits, today);
 
     const stats = {
       streak:   baseStats.streak,
@@ -110,7 +119,7 @@ export async function GET(request) {
     };
 
     const calendar = buildCalendar(
-      historyGroups, habits, now.getFullYear(), now.getMonth() + 1
+      historyGroups, normalizedHabits, now.getFullYear(), now.getMonth() + 1
     );
 
     const payload = { habits, completions: completionsForDate, calendar, stats };
