@@ -373,6 +373,11 @@ export default function TodayClient({ initialDate }) {
             completions: data.completions ?? prev.completions,
             stats:       data.stats       ?? prev.stats,
           };
+          // Write confirmed state into client cache so navigating away and
+          // back doesn't revert to the pre-toggle snapshot. The queue item
+          // was just dequeued, so applyLocalPending on the next load returns
+          // patched unchanged (no stale pending items remaining for this habit).
+          setCache(selectedDate, patched);
           return applyLocalPending(patched, selectedDate);
         });
       } else {

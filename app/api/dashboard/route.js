@@ -16,28 +16,13 @@ import { computeAllStats, buildCalendar, computePerHabitDetailed, normalizeHabit
  *
  * DB: one $transaction with THREE parallelised queries (one DB round-trip).
  *
- * Server cache (module Map, 30 s TTL):
- *   Warm serverless instances reuse results — useful when the user is
- *   rapidly navigating between Today and Progress.
+ * NOTE: No server-side in-memory cache here.  The client has a 60s L1 +
+ * 48h L2 localStorage cache that it keeps in sync after every toggle, so
+ * a server cache would only serve stale data after a completion is written
+ * via /api/complete (different serverless function → can't share Map state).
  *
  * Cache-Control: private, max-age=20, stale-while-revalidate=40
  */
-
-// ── Server-side in-memory cache (warm lambda) ────────────────────────────────
-const SERVER_CACHE     = new Map();
-const SERVER_CACHE_TTL = 30_000; // 30 s
-const SERVER_CACHE_MAX = 500;
-
-function sGet(key) {
-  const e = SERVER_CACHE.get(key);
-  return e && Date.now() - e.ts < SERVER_CACHE_TTL ? e.payload : null;
-}
-function sSet(key, payload) {
-  SERVER_CACHE.set(key, { payload, ts: Date.now() });
-  if (SERVER_CACHE.size > SERVER_CACHE_MAX) {
-    SERVER_CACHE.delete(SERVER_CACHE.keys().next().value);
-  }
-}
 
 // ── Route handler ────────────────────────────────────────────────────────────
 
@@ -53,15 +38,6 @@ export async function GET(request) {
 
   if (!/^\d{4}-\d{2}-\d{2}$/.test(date)) {
     return NextResponse.json({ error: 'Invalid date (use YYYY-MM-DD)' }, { status: 400 });
-  }
-
-  // ── Server cache hit ──────────────────────────────────────────────────────
-  const cacheKey = `${userId}:${date}`;
-  const hit      = sGet(cacheKey);
-  if (hit) {
-    return NextResponse.json(hit, {
-      headers: { 'Cache-Control': 'private, max-age=20, stale-while-revalidate=40' },
-    });
   }
 
   try {
@@ -134,9 +110,6 @@ export async function GET(request) {
     const completionsForDate2 = completionsForDate.filter(c => habitIdsForDate.has(c.habitId));
 
     const payload = { habits: habitsForDate, completions: completionsForDate2, calendar, stats };
-
-    // ── 4. Cache + respond ────────────────────────────────────────────────────
-    sSet(cacheKey, payload);
 
     return NextResponse.json(payload, {
       headers: { 'Cache-Control': 'private, max-age=20, stale-while-revalidate=40' },
