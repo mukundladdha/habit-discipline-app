@@ -1,7 +1,7 @@
 import { NextResponse } from 'next/server';
 import { prisma } from '../../../lib/prisma';
 import { extractUserId, getOrCreateUser } from '../../../lib/users';
-import { computeAllStats } from '../../../lib/stats';
+import { computeAllStats, normalizeHabitDates } from '../../../lib/stats';
 
 /**
  * POST /api/complete
@@ -50,7 +50,6 @@ export async function POST(request) {
     if (!user.habits.some((h) => h.id === habitId && h.isActive !== false)) {
       return NextResponse.json({ error: 'Habit not found' }, { status: 404 });
     }
-    const habitCount = user.habits.filter((h) => h.isActive !== false).length;
 
     // ── Step 2: write the completion (upsert keeps it idempotent) ────────────
     if (completed) {
@@ -87,9 +86,25 @@ export async function POST(request) {
       }),
     ]);
 
-    const stats = computeAllStats(historyGroups, habitCount);
+    // Normalize habit dates (null = legacy, always existed) for correct streak calc
+    const fallbackDate     = historyGroups.length > 0
+      ? new Date(historyGroups[0].date + 'T00:00:00Z')
+      : new Date();
+    const normalizedHabits = normalizeHabitDates(user.habits, fallbackDate);
+    const stats            = computeAllStats(historyGroups, normalizedHabits);
 
-    return NextResponse.json({ completions, stats });
+    // Filter completions to habits that existed on the requested date so the
+    // client's X/Y counter stays accurate when habits were added after that date.
+    const habitsForDate    = normalizedHabits.filter(h => {
+      const hDate = h.createdAt instanceof Date
+        ? h.createdAt.toISOString().slice(0, 10)
+        : String(h.createdAt).slice(0, 10);
+      return hDate <= date;
+    });
+    const habitIdsForDate  = new Set(habitsForDate.map(h => h.id));
+    const filteredCompletions = completions.filter(c => habitIdsForDate.has(c.habitId));
+
+    return NextResponse.json({ completions: filteredCompletions, stats });
 
   } catch (e) {
     console.error('[complete]', e);
