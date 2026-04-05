@@ -93,6 +93,74 @@ const DayCell = memo(function DayCell({ day, todayKey, isSelected, onSelect }) {
   p.todayKey      === n.todayKey
 );
 
+// ── Lifetime completion: per-habit circular ring card ─────────────────────────
+
+/** Map a 0-100 pct to a colour token for ring + track. */
+function ringColors(pct) {
+  if (pct >= 80) return { stroke: '#22c55e', track: 'rgba(34,197,94,0.12)'  };
+  if (pct >= 60) return { stroke: '#86efac', track: 'rgba(134,239,172,0.10)' };
+  if (pct >= 40) return { stroke: '#f59e0b', track: 'rgba(245,158,11,0.12)'  };
+  return           { stroke: '#f87171', track: 'rgba(248,113,113,0.12)'  };
+}
+
+const AllTimeCard = memo(function AllTimeCard({ habit, index }) {
+  const { name, totalCompleted, totalDaysLive } = habit;
+  const pct = totalDaysLive > 0 ? Math.round((totalCompleted / totalDaysLive) * 100) : 0;
+  const { stroke, track } = ringColors(pct);
+
+  const r            = 30;
+  const circ         = 2 * Math.PI * r;
+  const filled       = (pct / 100) * circ;
+
+  return (
+    <div
+      className="rounded-2xl bg-[#1e293b] border border-white/5 p-4 flex flex-col items-center gap-2.5"
+      style={{ animation: 'fade-up 0.4s ease-out both', animationDelay: `${index * 60}ms` }}
+    >
+      {/* SVG progress ring */}
+      <div className="relative w-[72px] h-[72px]">
+        <svg className="w-full h-full -rotate-90" viewBox="0 0 68 68">
+          {/* track */}
+          <circle cx="34" cy="34" r={r} fill="none" stroke={track} strokeWidth="7" />
+          {/* filled arc */}
+          <circle
+            cx="34" cy="34" r={r}
+            fill="none"
+            stroke={stroke}
+            strokeWidth="7"
+            strokeLinecap="round"
+            strokeDasharray={`${filled} ${circ}`}
+            style={{ transition: 'stroke-dasharray 0.9s cubic-bezier(0.4,0,0.2,1)' }}
+          />
+        </svg>
+        {/* centre label */}
+        <div className="absolute inset-0 flex flex-col items-center justify-center gap-0">
+          <span className="text-base font-black leading-none" style={{ color: stroke }}>
+            {pct}%
+          </span>
+        </div>
+      </div>
+
+      {/* Habit name */}
+      <p className="text-slate-100 text-[0.78rem] font-semibold text-center leading-snug line-clamp-2 w-full px-0.5">
+        {name}
+      </p>
+
+      {/* Fraction */}
+      <p className="text-[#94a3b8] text-[11px] font-medium tabular-nums -mt-1">
+        {totalCompleted}
+        <span className="text-slate-600">/{totalDaysLive}</span>
+        <span className="text-slate-600"> days</span>
+      </p>
+    </div>
+  );
+}, (p, n) =>
+  p.habit.totalCompleted === n.habit.totalCompleted &&
+  p.habit.totalDaysLive  === n.habit.totalDaysLive  &&
+  p.habit.name           === n.habit.name           &&
+  p.index                === n.index
+);
+
 // ── Habit breakdown: single habit card ────────────────────────────────────────
 
 const HabitCard = memo(function HabitCard({ habit, index }) {
@@ -374,6 +442,21 @@ export default function ProgressPage() {
           </div>
         )}
       </section>
+
+      {/* ── Lifetime completion section ───────────────────────────────────── */}
+      {perHabit.length > 0 && (
+        <section className="mt-8 pb-6">
+          <div className="flex items-baseline justify-between mb-4">
+            <h2 className="text-base font-bold text-slate-100 tracking-tight">Lifetime Completion</h2>
+            <span className="text-xs text-[#94a3b8] font-medium">Since tracking started</span>
+          </div>
+          <div className="grid grid-cols-2 gap-3">
+            {perHabit.map((habit, i) => (
+              <AllTimeCard key={habit.id} habit={habit} index={i} />
+            ))}
+          </div>
+        </section>
+      )}
     </main>
   );
 }
