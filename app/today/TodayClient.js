@@ -203,6 +203,11 @@ export default function TodayClient({ initialDate }) {
   // unmount or when a fresh manual retry is triggered.
   const retryTimerRef = useRef(null);
 
+  // dashboardStateRef: always-current mirror of dashboardState so toggleHabit
+  // can read the latest state synchronously without capturing a stale closure
+  // value. Updated on every render (just below the state declaration).
+  const dashboardStateRef = useRef(EMPTY_STATE);
+
   useEffect(() => { setSelectedDate(initDate); }, [initDate]);
 
   useEffect(() => {
@@ -307,6 +312,7 @@ export default function TodayClient({ initialDate }) {
 
   // ── Derived values ─────────────────────────────────────────────────────────
   const { habits, completions, stats } = dashboardState;
+  dashboardStateRef.current = dashboardState;           // keep ref in sync (stable toggle callback)
   const completedIds   = useMemo(() => new Set(completions.map(c => c.habitId)), [completions]);
   completedIdsRef.current = completedIds; // keep ref in sync (stable toggle callback)
 
@@ -363,23 +369,22 @@ export default function TodayClient({ initialDate }) {
         const data = await res.json();
         dequeue(queueId); // sent — remove from queue
 
-        // Patch from server response, then re-overlay any OTHER habits that are
-        // still pending in the queue (e.g., rapid multi-habit toggling).
-        // Without applyLocalPending here, concurrent toggles would briefly
-        // disappear when one API call resolves before the other.
-        setDashboardState(prev => {
-          const patched = {
-            ...prev,
-            completions: data.completions ?? prev.completions,
-            stats:       data.stats       ?? prev.stats,
-          };
-          // Write confirmed state into client cache so navigating away and
-          // back doesn't revert to the pre-toggle snapshot. The queue item
-          // was just dequeued, so applyLocalPending on the next load returns
-          // patched unchanged (no stale pending items remaining for this habit).
-          setCache(selectedDate, patched);
-          return applyLocalPending(patched, selectedDate);
-        });
+        // Build patched state from the always-current ref (not a closure value)
+        // so we correctly base on the latest React state even if other toggles
+        // fired concurrently.  Side effects (setCache) belong OUTSIDE the state
+        // updater — React may call functional updaters multiple times in Strict Mode.
+        const snap    = dashboardStateRef.current;
+        const patched = {
+          ...snap,
+          completions: data.completions ?? snap.completions,
+          stats:       data.stats       ?? snap.stats,
+        };
+        // Persist confirmed state to localStorage so that navigating away and
+        // back shows the correct checkbox state immediately from cache, before
+        // the background load() resolves.
+        setCache(selectedDate, patched);
+        // Re-overlay any other in-flight toggles (concurrent multi-habit case).
+        setDashboardState(applyLocalPending(patched, selectedDate));
       } else {
         // Server rejected — revert optimistic UI with a silent reload
         load(selectedDate, false);

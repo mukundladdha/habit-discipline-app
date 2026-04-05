@@ -111,8 +111,13 @@ export async function GET(request) {
 
     const payload = { habits: habitsForDate, completions: completionsForDate2, calendar, stats };
 
+    // no-store: browser must not cache this response.
+    // The client already has a 60s L1 + 48h L2 localStorage cache that is kept
+    // in sync after every toggle (setCache inside toggleHabit success handler).
+    // Allowing the browser to cache here causes stale responses to overwrite that
+    // good localStorage snapshot when load() fires after tab navigation.
     return NextResponse.json(payload, {
-      headers: { 'Cache-Control': 'private, max-age=20, stale-while-revalidate=40' },
+      headers: { 'Cache-Control': 'no-store' },
     });
 
   } catch (e) {
